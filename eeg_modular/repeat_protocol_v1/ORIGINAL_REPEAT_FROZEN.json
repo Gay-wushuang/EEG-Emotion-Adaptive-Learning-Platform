@@ -1,0 +1,118 @@
+{
+  "name": "Original-order personal repeat v1",
+  "frozen_at_utc": "2026-07-26T14:18:24.665325+00:00",
+  "status": "frozen_before_capture",
+  "production_model": "Production Baseline v1",
+  "model_modalities": [
+    "filtered",
+    "bandpower"
+  ],
+  "sampling": {
+    "nominal_sample_rate_hz": 512,
+    "signal_time_rule": "sample index at nominal 512 Hz for feature extraction",
+    "event_alignment_rule": "affine sample_index to packet_received_unix fit",
+    "window_seconds": 30,
+    "window_samples": 15360,
+    "stride_seconds": 2,
+    "stride_samples": 1024
+  },
+  "labels": {
+    "internal": [
+      "happy",
+      "normal",
+      "sad"
+    ],
+    "display": [
+      "positive",
+      "neutral",
+      "negative"
+    ],
+    "mapping": {
+      "happy": "positive",
+      "normal": "neutral",
+      "sad": "negative"
+    }
+  },
+  "stage_schedule": [
+    {
+      "stage": "rest_baseline",
+      "seconds": 120,
+      "description": "睁眼放松"
+    },
+    {
+      "stage": "positive_task",
+      "seconds": 240,
+      "description": "简单题＋即时正反馈"
+    },
+    {
+      "stage": "washout_1",
+      "seconds": 60,
+      "description": "放松"
+    },
+    {
+      "stage": "normal_task",
+      "seconds": 240,
+      "description": "中等难度学习"
+    },
+    {
+      "stage": "washout_2",
+      "seconds": 60,
+      "description": "放松"
+    },
+    {
+      "stage": "frustration_task",
+      "seconds": 240,
+      "description": "高难限时任务"
+    },
+    {
+      "stage": "recovery",
+      "seconds": 120,
+      "description": "停止任务、自然休息"
+    }
+  ],
+  "automatic_intervention": false,
+  "confidence_rejection_for_primary_stage_analysis": false,
+  "quality_gate": {
+    "policy": "Quality Gate v1",
+    "fitted_on": "277 training windows, 26 subjects",
+    "evaluation_order": "before emotion probabilities",
+    "levels": [
+      "trusted",
+      "warning",
+      "low_ood"
+    ],
+    "interpretation_rule": "only trusted windows allow limited state interpretation"
+  },
+  "analysis_order": [
+    "data_integrity",
+    "timeline_and_event_alignment",
+    "quality_metrics",
+    "quality_gate",
+    "frozen_model_inference",
+    "stage_and_half_summaries",
+    "session_level_comparison"
+  ],
+  "statistics": {
+    "independent_unit": "experiment session",
+    "supporting_units": [
+      "non-overlapping 30-second blocks",
+      "stage median"
+    ],
+    "forbidden": "window-level independent-sample significance"
+  },
+  "git_revision": "7898adeb459f49e347996d2d0ba4ad59251438ae",
+  "sha256": {
+    "model": "ff0a1535bec9524057ba5db96b816bff5b472de4c806e0863fe3383c817776a7",
+    "scaler_filtered": "98ab724680c6d42c46175c10463bd8e512d6b2e372ae5698b7b09619249c9efb",
+    "scaler_bandpower": "d4d32b07702821103e134b64a57129d5516dbe628de7574fb1a39def83c83cb6",
+    "canonical_feature_config": "2200eb0a812901a7bbc40e8e597cf3743b2b529490bf23d34bd0c128955bc0db",
+    "class_mapping": "25495f832fddb8ba2bf21b7fdc6cc4714baae0a99af1d3cb999f1fa670b26a14",
+    "label_semantics": "a84a159334bfcec4ca24ed52274878718724198e98d6a9c247448cd45028a188",
+    "quality_algorithm": "36522ab9cb10c7fd0e0200aa5ccc90445b785ac59a17e8e0025232da79600ea7",
+    "quality_gate": "b90788b971028bf80a192597044ba00aef85433d7f642e2b05c4b0a52c6ec854",
+    "quality_policy": "9de07d5be4ef06027dc28fb3fdb10e7ae6075722b474c47645bc82ddf5dff398",
+    "event_script": "5adb4b3160f9b655f2e8fa16cca7a57d79c6e6bf3783f8ef8421a068aa99d340",
+    "converter": "1f48184dc270fb10c0dc5be0f9eeb02e81eb845d452fa31b1ab851a94f6d5b37",
+    "analysis_script": "14f83edc6f0fee4b81bd1c8db3c0948d211765c995f39104a71060141bb7ce45"
+  }
+}

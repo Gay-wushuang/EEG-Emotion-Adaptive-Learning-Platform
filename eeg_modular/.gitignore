@@ -1,0 +1,106 @@
+/outputs/
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Data files
+/data/
+/datasets/
+*.edf
+*.set
+*.fif
+*.mat
+*.csv
+
+# Log files
+logs/
+*.log
+
+# Configuration files
+config.ini
+config.json
+.env
+
+# Model files
+/models/
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Features files (training data)
+/features/
+*.npy
+
+# Realtime inference model and features files
+realtime_inference/features/
+realtime_inference/models/
+
+# Features files (training data)
+/features/
+*.npy
+
+# Realtime inference model and features files
+realtime_inference/features/
+realtime_inference/models/
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.temp
+.dependency_quarantine/
+.ui_review/
+.pytest_cache/
+
+# ThinkGear Connector (NeuroSky device software)
+ThinkGear Connector/
+
+# Analysis reports
+PROJECT_ANALYSIS_REPORT.md
+*ANALYSIS*.md
+
+# Realtime inference logs
+realtime_inference/logs/
+realtime_inference/*.log
+realtime_inference/log.txt 
+realtime_inference/captures/
+
+# Local EEG recordings and generated experiment artifacts
+raw_*/
+features_v*/
+outputs_v*/
+splits_v*/
+quality_reference_v*/
+
+# Local application/session exports
+smart_learning_app/data/
+smart_learning_app/reports/
+data/sessions/
+reports/generated/
+
+# Build and packaging artifacts
+build/
+dist/
+*.spec
+installer/output/
+
+# Temporary documents
+8~9.md
+aa.txt

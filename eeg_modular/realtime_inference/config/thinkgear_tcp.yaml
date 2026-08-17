@@ -1,0 +1,59 @@
+model:
+  path: "../outputs/CNN/models/best_fold4.pt"
+  type: "multimodal_cnn"
+  device: "auto"
+  num_classes: 3
+  modalities: ["filtered", "powerspec", "att", "med"]
+  time_steps: 10
+  feat_dim: 4
+  use_cvae: true
+  cvae_latent_dim: 64
+  cvae_input_dim: 160
+  dropout: 0.5
+  scalers_dir: "../features"
+  skip_scaling: false
+
+voting:
+  window_size: 8
+  vote_threshold: 0.5
+  transition_duration: 0.6
+  min_stability_frames: 3
+
+unity:
+  host: "localhost"
+  port: 8765
+  max_connections: 5
+  ping_interval: 30.0
+  ping_timeout: 10.0
+
+thinkgear:
+  connection_mode: "tcp"
+  tcp_host: "127.0.0.1"
+  tcp_port: 13854
+  com_port: "COM6"
+  baud_rate: 57600
+  sample_rate: 512
+  buffer_size: 2048
+  analysis_window_seconds: 30.0
+  use_mock: false
+  use_training_data: false
+  features_dir: "../features"
+  training_data_hold_samples: 30
+  stale_timeout_seconds: 2.5
+
+inference:
+  inference_interval: 2.0
+  confidence_threshold: 0.60
+  max_poor_signal: 50
+  results_csv: "logs/inference_results.csv"
+  decision_ewma_alpha: 0.20
+  intervention_negative_probability: 0.60
+  intervention_sustain_seconds: 20
+  intervention_cooldown_seconds: 90
+  max_inference_latency_ms: 200
+  target_cpu_usage_percent: 30
+
+logging:
+  level: "INFO"
+  log_file: "logs/realtime_inference_thinkgear.log"
+  console_output: true

@@ -1,0 +1,47 @@
+# MLP 模型 - 最终优化尝试（目标 60%+）
+seed: 42
+data_dir: ./features
+emotions: [happy, sad, normal]
+
+use_npy_data: true
+modalities: [filtered, powerspec, att, med]
+
+split:
+  test_size: 0.20
+  val_size: 0.10
+  random_state: 42
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  select_k_best: 70  # ✅ 尝试 70 个特征
+  pca_n_components: null
+  augment: false
+  noise_std: 0.01
+  time_jitter: 0.02
+
+model:
+  type: mlp
+  cv: 3
+  n_jobs: -1
+  random_state: 42
+  param_grid:
+    # ✅ 更精细的参数网格
+    hidden_layer_sizes: [[512, 256], [1024, 512], [1024, 512, 256]]
+    activation: [tanh, relu]
+    solver: [adam]
+    alpha: [0.0001, 0.0005, 0.001, 0.005]
+    learning_rate: [adaptive]
+    learning_rate_init: [0.0005, 0.001, 0.002, 0.005, 0.01]
+    max_iter: [2000]
+    early_stopping: [true]
+    validation_fraction: [0.1, 0.15]
+    n_iter_no_change: [20, 25]
+
+output:
+  base_dir: outputs
+  run_name: MLP
+
+viz:
+  seaborn_confusion_matrix: true
+  umap_boundary: true

@@ -1,0 +1,23 @@
+{
+  "version": "Production Baseline v1 confidence policy",
+  "probability_calibration": "none",
+  "temperature_scaling_evaluated": true,
+  "temperature_scaling_deployed": false,
+  "rejection_threshold": 0.6,
+  "selection_rule": "lowest tested threshold with mean accepted accuracy >= 0.70 across three single-model seed OOF runs",
+  "oof_coverage_mean": 0.4741275571600481,
+  "oof_accepted_accuracy_mean": 0.7067028307034002,
+  "oof_accepted_macro_f1_mean": 0.6585121747067931,
+  "oof_error_rate_mean": 0.2932971692965998,
+  "oof_accepted_accuracy_min_across_seeds": 0.6754966887417219,
+  "tested_thresholds": [
+    0.4,
+    0.45,
+    0.5,
+    0.55,
+    0.6,
+    0.65
+  ],
+  "evidence_path": "../outputs_v2/confidence_calibration_v1/calibration_report.json",
+  "interpretation": "Confidence is a selective operating score, not a calibrated probability of correctness."
+}

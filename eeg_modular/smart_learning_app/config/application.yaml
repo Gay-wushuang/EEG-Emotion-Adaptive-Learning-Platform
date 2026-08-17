@@ -1,0 +1,47 @@
+application:
+  name: "智学脑机助手"
+  version: "0.1.0"
+  default_mode: "live"
+  language: "zh_CN"
+
+device:
+  host: "127.0.0.1"
+  port: 13854
+  sample_rate_hz: 512
+  wait_for_raw_timeout_seconds: 30
+  stale_timeout_seconds: 2
+
+production_assets:
+  directory: "../../production_baseline_v1"
+  contract: "baseline_contract.json"
+  model: "model.pt"
+  scaler_filtered: "scaler_filtered.joblib"
+  scaler_bandpower: "scaler_bandpower.joblib"
+  class_mapping: "class_mapping.json"
+  feature_config: "canonical_feature_config.json"
+  checksums: "checksums.sha256"
+
+inference:
+  modalities: ["filtered", "bandpower"]
+  auxiliary_only: ["att", "med"]
+  internal_class_order: ["happy", "normal", "sad"]
+  display_mapping:
+    happy: "positive"
+    normal: "neutral"
+    sad: "negative"
+  window_seconds: 30
+  update_step_seconds: 2
+  probability_calibration: "none"
+  rejection_threshold: 0.60
+
+decision:
+  stable_horizon_seconds: 90
+  ewma_enabled: true
+  rejected_windows_update_state: false
+  intervention_cooldown_seconds: 90
+
+storage:
+  sessions_directory: "../data/sessions"
+  reports_directory: "../reports"
+  local_only: true
+

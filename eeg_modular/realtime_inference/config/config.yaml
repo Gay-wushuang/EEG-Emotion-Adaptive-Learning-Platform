@@ -1,0 +1,58 @@
+model:
+  path: "../outputs/CNN/models/best_fold4.pt"
+  type: "multimodal_cnn"
+  device: "auto"
+  num_classes: 3
+  modalities: ["filtered", "powerspec", "att", "med"]
+  time_steps: 10
+  feat_dim: 4
+  use_cvae: true
+  cvae_latent_dim: 64
+  cvae_input_dim: 160
+  dropout: 0.5
+  scalers_dir: "../features"
+  skip_scaling: false
+
+voting:
+  window_size: 10
+  vote_threshold: 0.6
+  transition_duration: 1.0
+  min_stability_frames: 3
+
+unity:
+  host: "localhost"
+  port: 8765
+  max_connections: 5
+  ping_interval: 30.0
+  ping_timeout: 10.0
+
+thinkgear:
+  connection_mode: "mock"
+  com_port: "COM6"
+  baud_rate: 57600
+  tcp_host: "127.0.0.1"
+  tcp_port: 13854
+  sample_rate: 512
+  buffer_size: 2048
+  analysis_window_seconds: 30.0
+  use_mock: true
+  use_training_data: true  # 使用训练数据作为mock（确保特征格式一致）
+  features_dir: "../features"  # 训练数据目录
+  training_data_hold_samples: 30  # 每个训练数据样本保持多少帧（越大变化越慢）
+
+inference:
+  inference_interval: 2.0
+  confidence_threshold: 0.60
+  max_poor_signal: 50
+  results_csv: "logs/inference_results.csv"
+  decision_ewma_alpha: 0.20
+  intervention_negative_probability: 0.60
+  intervention_sustain_seconds: 20
+  intervention_cooldown_seconds: 90
+  max_inference_latency_ms: 200
+  target_cpu_usage_percent: 30
+
+logging:
+  level: "DEBUG"
+  log_file: "logs/realtime_inference.log"
+  console_output: true

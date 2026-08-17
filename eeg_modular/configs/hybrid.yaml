@@ -1,0 +1,82 @@
+# HYBRID 模型 - 特征工程优化（目标 60%+）
+seed: 42
+data_dir: ./features
+emotions: [happy, sad, normal]
+
+use_npy_data: true
+modalities: [filtered, powerspec, att, med]
+
+split:
+  test_size: 0.20
+  val_size: 0.10
+  random_state: 42
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  select_k_best: 100  # ✅ 增加特征数量
+  pca_n_components: null
+  augment: false
+  noise_std: 0.01
+  time_jitter: 0.02
+
+model:
+  type: hybrid
+  voting_method: soft
+  use_stacking: false
+  random_state: 42
+
+  # ✅ 优化各基模型参数
+  mlp_config:
+    cv: 3
+    n_jobs: -1
+    max_iter: 2000
+    random_state: 42
+    param_grid:
+      hidden_layer_sizes: [[256, 128], [512]]
+      activation: [relu]
+      solver: [adam]
+      alpha: [0.0001, 0.001]
+
+  rf_config:
+    cv: 3
+    n_jobs: -1
+    random_state: 42
+    param_grid:
+      n_estimators: [500, 800]
+      max_depth: [20, 30]
+      min_samples_split: [5]
+      min_samples_leaf: [2]
+      max_features: [sqrt]
+
+  svm_config:
+    cv: 3
+    n_jobs: -1
+    probability: true
+    random_state: 42
+    param_grid:
+      kernel: [rbf]
+      C: [10, 50]
+      gamma: [0.01, 0.1]
+      class_weight: [balanced]
+
+  xgb_config:
+    cv: 3
+    n_jobs: -1
+    random_state: 42
+    param_grid:
+      n_estimators: [800, 1000]
+      learning_rate: [0.1]
+      max_depth: [6, 8]
+      subsample: [0.9]
+      colsample_bytree: [0.9]
+      reg_lambda: [0.5, 1.0]
+      reg_alpha: [0.0, 0.5]
+
+output:
+  base_dir: outputs
+  run_name: HYBRID
+
+viz:
+  seaborn_confusion_matrix: true
+  umap_boundary: true

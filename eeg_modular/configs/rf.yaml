@@ -1,0 +1,43 @@
+# RF 模型 - 还原到最佳版本（67.90%）
+seed: 42
+data_dir: ./features
+emotions: [happy, sad, normal]
+
+use_npy_data: true
+modalities: [filtered, powerspec, att, med]
+
+split:
+  test_size: 0.20
+  val_size: 0.10
+  random_state: 42
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  select_k_best: 50  # ✅ 还原到 50 个特征
+  pca_n_components: null
+  augment: false
+  noise_std: 0.01
+  time_jitter: 0.02
+
+model:
+  type: rf
+  cv: 5
+  n_jobs: -1
+  random_state: 42
+  param_grid:
+    # ✅ 还原到最佳参数范围
+    n_estimators: [300, 500, 800, 1000]
+    max_depth: [10, 20, 30, 40, 50]
+    min_samples_split: [2, 5, 10]
+    min_samples_leaf: [1, 2, 4]
+    max_features: [sqrt, log2]
+    bootstrap: [true]
+
+output:
+  base_dir: outputs
+  run_name: RF
+
+viz:
+  seaborn_confusion_matrix: true
+  umap_boundary: true

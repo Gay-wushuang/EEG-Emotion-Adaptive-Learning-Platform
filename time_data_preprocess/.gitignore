@@ -1,0 +1,34 @@
+# 数据目录
+data/
+
+# 输出目录
+features/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 编辑器配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 环境文件
+.env
+venv/
+env/
+envs/
+
+# 日志文件
+*.log
+
+# 其他临时文件
+*.tmp
+*.temp
+
+# 操作系统文件
+Thumbs.db
+.DS_Store

@@ -1,0 +1,24 @@
+# 基础依赖
+numpy
+scikit-learn
+joblib
+matplotlib
+
+# 深度学习依赖
+torch
+torchaudio
+torchvision
+
+# 梯度提升依赖
+xgboost
+
+# 可视化依赖
+seaborn
+umap-learn
+
+# 配置文件依赖
+pyyaml
+
+# 其他可能需要的依赖
+pandas
+scipy

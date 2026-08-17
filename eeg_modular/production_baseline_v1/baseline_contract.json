@@ -1,0 +1,45 @@
+{
+  "name": "Production Baseline v1",
+  "status": "production_model_trained",
+  "emotion_classifier_modalities": [
+    "filtered",
+    "bandpower"
+  ],
+  "auxiliary_only_modalities": [
+    "att",
+    "med"
+  ],
+  "quality_gate": [
+    "poor_signal"
+  ],
+  "input_shape_per_modality": [
+    10,
+    4
+  ],
+  "accuracy": 0.6388077455218849,
+  "macro_f1": 0.6268736163360241,
+  "subjects": 26,
+  "random_seeds": [
+    42,
+    43,
+    44
+  ],
+  "grouped_folds_per_seed": 5,
+  "augmentation": false,
+  "cvae": false,
+  "parameter_count": 13635,
+  "canonical_dataset_fingerprint": "5e904f04eb39db4f7e9f595259466220a833edda912aee9b299597f22ba2d732",
+  "deployment_weight_status": "trained_from_scratch_on_all_277_windows",
+  "class_names": [
+    "happy",
+    "normal",
+    "sad"
+  ],
+  "production_seed": 42,
+  "production_epochs": 20,
+  "epoch_selection": "median_best_epoch_from_15_grouped_cv_runs",
+  "canonical_feature_config_sha256": "2200eb0a812901a7bbc40e8e597cf3743b2b529490bf23d34bd0c128955bc0db",
+  "confidence_policy": "confidence_policy.json",
+  "rejection_threshold": 0.6,
+  "probability_calibration": "none"
+}

@@ -1,0 +1,18 @@
+# 智学脑机助手 UI原型依赖
+# ============================================
+# 测试所用Python环境:
+#   E:\anaconda3\envs\eegcnn\python.exe (Python 3.10.13)
+#
+# 该环境已安装的UI依赖:
+#   PySide6 6.8.3
+#   pyqtgraph 0.14.0
+#   numpy (已随eegcnn环境存在)
+#
+# 测试命令（在 eeg_modular 目录下执行）:
+#   $env:QT_QPA_PLATFORM="offscreen"
+#   E:\anaconda3\envs\eegcnn\python.exe -m unittest tests.test_ui_smoke -v
+# ============================================
+
+PySide6>=6.6.0
+pyqtgraph>=0.13.0
+numpy>=1.24.0

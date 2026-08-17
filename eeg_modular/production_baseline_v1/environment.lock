@@ -1,0 +1,6 @@
+python==3.10.13
+torch==2.5.1+cu121
+numpy==2.2.6
+scipy==1.15.3
+scikit-learn==1.7.2
+joblib==1.5.3

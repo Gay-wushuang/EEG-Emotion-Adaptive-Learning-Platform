@@ -1,0 +1,78 @@
+# LSTM 模型 - 极致优化版本（目标 60%+）
+seed: 42
+
+output:
+  base_dir: outputs
+  run_name: LSTM
+
+data_dir: ./features
+use_npy_data: true
+modalities: [filtered, powerspec, att, med]
+emotions: [happy, sad, normal]
+
+time_steps: 128
+
+split:
+  test_size: 0.20
+  seed: 42
+
+augment:
+  enabled: false
+  sad_times: 3
+  other_times: 3
+  noise:
+    mean: 0.0
+    std: 0.001
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  pca_n_components: null
+
+gaussian_noise:
+  enabled: false
+  apply_to: [ae, clf]
+  mean: 0.0
+  std: 0.001
+
+train:
+  use_amp: true
+
+autoencoder:
+  epochs: 200  # ✅ 增加训练轮次：150 → 200
+  batch_size: 256
+  val_split: 0.10
+  latent_dim: 256  # ✅ 增加潜在维度：128 → 256
+  enc_layers: 4  # ✅ 增加层数：3 → 4
+  enc_units: 256  # ✅ 增加单元数：128 → 256
+  enc_dropout: 0.2  # ✅ 降低 dropout：0.3 → 0.2
+  use_bidirectional_decoder: true
+  dec_dropout: 0.2
+  lr: 0.0005  # ✅ 降低学习率：0.001 → 0.0005
+  lr_patience: 10
+  early_stop_patience: 30
+  min_lr: 1e-7
+
+mixup:
+  enabled: false
+
+classifier:
+  mode: bilstm
+  epochs: 500  # ✅ 增加训练轮次：400 → 500
+  batch_size: 256
+  val_split: 0.20
+  initial_lr: 0.0005  # ✅ 降低学习率：0.001 → 0.0005
+  use_cosine_decay: false
+  lr_patience: 5
+  early_stop_patience: 50  # ✅ 增加耐心：40 → 50
+  min_lr: 1e-7
+
+  lstm_units: 512  # ✅ 大幅增加单元数：256 → 512
+  num_layers: 4  # ✅ 增加层数：3 → 4
+  dropout: 0.2  # ✅ 降低 dropout：0.3 → 0.2
+  pooling: avgmax
+  label_smoothing: 0.005  # ✅ 降低标签平滑：0.01 → 0.005
+
+viz:
+  seaborn_confusion_matrix: true
+  umap_boundary: true

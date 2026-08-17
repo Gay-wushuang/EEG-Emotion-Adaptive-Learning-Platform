@@ -1,0 +1,42 @@
+# SVM 模型 - 特征工程优化（目标 60%+）
+seed: 42
+data_dir: ./features
+emotions: [happy, sad, normal]
+
+use_npy_data: true
+modalities: [filtered, powerspec, att, med]
+
+split:
+  test_size: 0.20
+  val_size: 0.10
+  random_state: 42
+
+preprocess:
+  impute_strategy: mean
+  scale: true
+  select_k_best: 100  # ✅ 增加特征数量
+  pca_n_components: null
+  augment: false
+  noise_std: 0.01
+  time_jitter: 0.02
+
+model:
+  type: svm
+  cv: 3
+  n_jobs: -1
+  probability: true
+  random_state: 42
+  param_grid:
+    kernel: [rbf]
+    C: [1, 10, 50, 100, 200]
+    gamma: [scale, auto, 0.001, 0.01, 0.1, 1]
+    class_weight: [balanced]
+    max_iter: [100000]
+
+output:
+  base_dir: outputs
+  run_name: SVM
+
+viz:
+  seaborn_confusion_matrix: true
+  umap_boundary: true

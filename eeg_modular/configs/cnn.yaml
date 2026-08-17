@@ -1,0 +1,52 @@
+seed: 42
+
+output:
+  base_dir: outputs
+
+cnn:
+  framework: torch
+  data_dir: ./features
+  modalities: [filtered, powerspec, att, med]
+
+  input:
+    time_steps: 10
+    feat_dim: 4
+
+  dropout: 0.5
+
+  # ===== CVAE integration =====
+  cvae:
+    enabled: true
+    checkpoint: eeg_emotion/models/torch/cvae_best_model.pth
+    py_path: eeg_emotion/models/torch/cvae_model.py
+    latent_dim: 64
+    strict: false
+
+  # ===== Loss =====
+  loss:
+    focal_gamma: 2.0
+
+  # ===== Class weight (manual boost Sad) =====
+  class_weight:
+    sad_multiplier: 3.0
+
+  # ===== Scheduler =====
+  scheduler:
+    T_0: 10
+    T_mult: 2
+    eta_min: 1e-6
+
+  train:
+    epochs: 200
+    batch_size: 256
+    lr: 0.001
+    weight_decay: 0.001
+    num_workers: 0
+    n_splits: 5
+    use_amp: true
+    log_every: 10
+
+# 可视化配置
+viz:
+  seaborn_confusion_matrix: true  # 使用seaborn风格的混淆矩阵
+  umap_boundary: true  # 默认开启单个模型的UMAP生成 
