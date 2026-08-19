@@ -65,6 +65,10 @@ class InferenceWorker(QThread):
         noisy = np.clip(noisy, 0.02, 0.98)
         probs = noisy / noisy.sum()
 
+        # 保存原始概率（未经 EWMA）供 AdaptiveFeedbackEngine 使用
+        # 确保 Mock 和 Live 共享唯一的 EWMA 时间策略
+        raw_probs = probs.copy()
+
         if self._ewma is None:
             self._ewma = probs.copy()
         else:
@@ -76,6 +80,7 @@ class InferenceWorker(QThread):
 
         self.result_ready.emit({
             "probabilities": smoothed.tolist(),
+            "raw_probabilities": raw_probs.tolist(),
             "predicted_state": CLASS_NAMES[pred_idx],
             "confidence": confidence,
             "ewma_negative": float(smoothed[2]),

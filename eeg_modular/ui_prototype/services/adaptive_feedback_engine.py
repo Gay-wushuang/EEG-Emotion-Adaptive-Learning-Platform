@@ -3,17 +3,23 @@
 职责：
     1. 质量门控（rejected → 无动作）
     2. 预热检查（warmup 未完成 → 无正式干预）
-    3. 持续负性判定（EWMA + sustain_seconds + cooldown_seconds）
-    4. AdaptiveAction 选择（hard→medium, medium→easy, easy→break）
-    5. 生成原因和反馈文本
+    3. 生产模型接受门控（accepted=False → 不计入情绪证据）
+    4. 持续负性判定（复用 EWMASustainedNegativeDecision：EWMA + sustain + cooldown）
+    5. AdaptiveAction 选择（hard→medium, medium→easy, easy→break）
+    6. 生成原因和反馈文本
 
 不得依赖：
     QWidget, TaskPage, QComboBox, ThinkGear socket, 模型权重。
     只接受已得到的状态信息。
 
+时间策略（单一来源）：
+    原始 probability → 一次 EWMA → 持续 20s → 冷却 90s → 动作选择。
+    不得 Mock 和 Live 使用不同的隐式平滑层数。
+
 安全护栏（AGENTS.md §IV）：
     - quality_level == rejected → 不得自适应改变任务、不得生成 intervention
     - warmup 未完成 → 不触发正式学习状态干预
+    - accepted == False（Production Baseline 拒识）→ 不计入情绪证据、不更新 EWMA、不累计 sustain
     - 没达到持续证据要求 → 不触发 reduce_difficulty / suggest_break
     - cooldown 未结束 → 不得再次触发 intervention
     - hard → medium, medium → easy, easy → suggest_break
@@ -28,6 +34,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
+
 # 复用 DashboardState 中的正式枚举（不建立第二套枚举）
 from services.dashboard_state import (
     DIFFICULTY_EASY,
@@ -35,6 +43,14 @@ from services.dashboard_state import (
     DIFFICULTY_HARD,
     DIFFICULTY_DISPLAY,
     AdaptiveAction,
+)
+
+# 复用仓库已有的 Temporal Decision Policy
+# realtime_inference/src/decision.py 中的 EWMASustainedNegativeDecision
+# 已正确实现：eligible=False 时不更新 EWMA、重置持续计时
+from realtime_inference.src.decision import (
+    EWMASustainedNegativeDecision,
+    DecisionState,
 )
 
 
@@ -114,15 +130,19 @@ class AdaptiveDecision:
 class AdaptiveFeedbackEngine:
     """最小公共自适应反馈决策引擎。
 
-    输入：已得到的状态信息（quality_level, negative_prob, attention,
-          task_difficulty, timestamp, warmup_complete, prev_ewma）
+    Temporal Decision（EWMA + sustain + cooldown）委托给
+    仓库已有的 EWMASustainedNegativeDecision，确保 Mock 和 Live
+    使用完全相同的时间平滑策略。
+
+    输入：原始概率数组 + 接受标志 + 质量/预热/注意力等
     输出：AdaptiveDecision（不可变决策结果）
 
     使用方法：
         engine = AdaptiveFeedbackEngine()
         decision = engine.decide(
+            probabilities=np.array([0.1, 0.2, 0.7]),
+            accepted=True,
             quality_level="trusted",
-            negative_prob=0.65,
             attention=45.0,
             task_difficulty="hard",
             timestamp=time.time(),
@@ -139,124 +159,96 @@ class AdaptiveFeedbackEngine:
         cooldown_seconds: float = 90.0,
         alpha: float = 0.2,
     ):
+        # ── Temporal Decision Policy（单一 EWMA 来源）──
+        self._policy = EWMASustainedNegativeDecision(
+            negative_index=2,  # [positive, neutral, negative] → negative 是 index 2
+            alpha=alpha,
+            negative_threshold=negative_threshold,
+            sustain_seconds=sustain_seconds,
+            cooldown_seconds=cooldown_seconds,
+        )
+
+        # ── 参数镜像（供外部查询）──
         self.negative_threshold = negative_threshold
         self.sustain_seconds = sustain_seconds
         self.cooldown_seconds = cooldown_seconds
         self.alpha = alpha
 
-        # ── 内部状态（不可从外部直接操作）──
-        self._above_since: Optional[float] = None
-        self._last_intervention: Optional[float] = None
-        self._negative_ewma: float = 0.0
-        self._initialized: bool = False
-
     # ── 核心决策方法 ──
 
     def decide(
         self,
+        probabilities: np.ndarray,
+        accepted: bool,
         quality_level: str,
-        negative_prob: float,
         attention: Optional[float],
         task_difficulty: str,
         timestamp: float,
         warmup_complete: bool,
-        prev_ewma: Optional[float] = None,
     ) -> AdaptiveDecision:
-        """核心决策：输入状态，输出 AdaptiveDecision。
+        """核心决策：输入原始概率 + 状态信息，输出 AdaptiveDecision。
 
         Args:
+            probabilities: 三分类概率数组 [P(positive), P(neutral), P(negative)]
+                          原始值，未经二次 EWMA
+            accepted: Production Baseline 置信度是否通过拒识阈值
             quality_level: "trusted" | "warning" | "rejected"
-            negative_prob: 当前窗口的负性概率（原始，未经 EWMA）
             attention: 当前 Attention 值（None 表示设备离线）
             task_difficulty: "easy" | "medium" | "hard"
             timestamp: 当前时间戳（time.time()）
             warmup_complete: 预热是否完成
-            prev_ewma: 上一次负性 EWMA（None 则用内部维护值）
 
         Returns:
             AdaptiveDecision: 决策结果（不可变）
         """
-        # ── 安全护栏 1：质量 rejected → 无动作 ──
+        # ── 安全护栏 1：质量 rejected → 无动作，重置计时 ──
         if quality_level == "rejected":
-            self._above_since = None
+            self._policy.above_since = None
             return AdaptiveDecision.none()
 
         # ── 安全护栏 2：预热未完成 → 不触发正式干预 ──
         if not warmup_complete:
-            self._above_since = None
+            self._policy.above_since = None
             return AdaptiveDecision.maintain("预热进行中，暂不生成学习状态干预。")
 
-        # ── EWMA 更新 ──
-        if prev_ewma is not None:
-            self._negative_ewma = (
-                self.alpha * negative_prob
-                + (1 - self.alpha) * prev_ewma
-            )
-        elif not self._initialized:
-            self._negative_ewma = negative_prob
-            self._initialized = True
-        else:
-            self._negative_ewma = (
-                self.alpha * negative_prob
-                + (1 - self.alpha) * self._negative_ewma
-            )
+        # ── 安全护栏 3：accepted=False（Production 拒识）→ 不计入情绪证据 ──
+        # 当 accepted=False 时：
+        #   - 不更新 Temporal Policy 的 EWMA（不保留被拒识窗口的证据）
+        #   - 重置 above_since（不累计 sustain）
+        #   - 后续 accepted=True 时必须重新累计证据，不可复用旧 EWMA
+        if not accepted:
+            self._policy.ewma = None
+            self._policy.above_since = None
 
-        neg = self._negative_ewma
+        eligible = bool(accepted and quality_level != "rejected" and warmup_complete)
 
-        # ── 安全护栏 3：未达负性阈值 → 重置持续计时 ──
-        if neg < self.negative_threshold:
-            self._above_since = None
-            return AdaptiveDecision(
-                action=AdaptiveAction.MAINTAIN,
-                reason="",
-                feedback_text="",
-                should_emit_event=False,
-                negative_ewma=neg,
-                above_seconds=0.0,
-            )
-
-        # ── 开始 / 持续计时 ──
-        if self._above_since is None:
-            self._above_since = timestamp
-
-        above_seconds = timestamp - self._above_since
-
-        # ── 安全护栏 4：冷却期检查 ──
-        cooled = (
-            self._last_intervention is None
-            or timestamp - self._last_intervention >= self.cooldown_seconds
+        # ── 委托 Temporal Decision Policy ──
+        state: DecisionState = self._policy.update(
+            np.asarray(probabilities, dtype=np.float64),
+            timestamp,
+            eligible,
         )
 
-        in_cooldown = not cooled
-
-        # ── 安全护栏 5：持续判定 + 冷却通过 → 触发 intervention ──
-        if above_seconds >= self.sustain_seconds and cooled:
-            self._last_intervention = timestamp
-            self._above_since = None
+        # ── Temporal Policy 触发 → 选择 AdaptiveAction ──
+        if state.intervention_triggered:
             return self._select_action(
-                task_difficulty, attention, neg, above_seconds
+                task_difficulty,
+                attention,
+                state.negative_ewma if state.negative_ewma is not None else 0.0,
+                state.above_seconds,
             )
 
-        # ── 持续中但未达 sustain，或冷却中 ──
-        if in_cooldown:
-            return AdaptiveDecision(
-                action=AdaptiveAction.MAINTAIN,
-                reason="",
-                feedback_text="",
-                should_emit_event=False,
-                negative_ewma=neg,
-                above_seconds=above_seconds,
-                in_cooldown=True,
-            )
+        # ── 未触发：返回 MAINTAIN（带状态信息，供 UI 展示）──
+        in_cooldown = self._compute_cooldown_status(timestamp)
 
-        # 持续中，尚未达 sustain_seconds
         return AdaptiveDecision(
             action=AdaptiveAction.MAINTAIN,
             reason="",
             feedback_text="",
             should_emit_event=False,
-            negative_ewma=neg,
-            above_seconds=above_seconds,
+            negative_ewma=state.negative_ewma if state.negative_ewma is not None else 0.0,
+            above_seconds=state.above_seconds,
+            in_cooldown=in_cooldown,
         )
 
     # ── 动作选择（公开方法，供直接调用使用）──
@@ -300,9 +292,8 @@ class AdaptiveFeedbackEngine:
         negative_ewma: float,
         above_seconds: float,
     ) -> AdaptiveDecision:
-        """内部包装，调用 select_action 并附加状态信息。"""
+        """内部包装，调用 select_action 并附加 Temporal 状态信息。"""
         decision = self.select_action(task_difficulty, attention)
-        # 附加当前 EWMA 和持续秒数（不可变对象需要重建）
         return AdaptiveDecision(
             action=decision.action,
             reason=decision.reason,
@@ -313,33 +304,40 @@ class AdaptiveFeedbackEngine:
             above_seconds=above_seconds,
         )
 
+    def _compute_cooldown_status(self, timestamp: float) -> bool:
+        """计算当前是否处于冷却期。"""
+        if self._policy.last_intervention is None:
+            return False
+        return (timestamp - self._policy.last_intervention) < self._policy.cooldown_seconds
+
     # ── 状态管理 ──
 
     def reset(self) -> None:
-        """复位所有内部状态（reset_session 时调用）。"""
-        self._above_since = None
-        self._last_intervention = None
-        self._negative_ewma = 0.0
-        self._initialized = False
+        """复位所有内部状态（reset_session 或设备离线时调用）。"""
+        self._policy.ewma = None
+        self._policy.above_since = None
+        self._policy.last_intervention = None
 
     @property
     def in_cooldown(self) -> bool:
         """当前是否处于冷却期（供外部查询）。"""
-        if self._last_intervention is None:
+        if self._policy.last_intervention is None:
             return False
-        return (time.time() - self._last_intervention) < self.cooldown_seconds
+        return (time.time() - self._policy.last_intervention) < self._policy.cooldown_seconds
 
     @property
     def current_negative_ewma(self) -> float:
         """当前负性 EWMA 值。"""
-        return self._negative_ewma
+        if self._policy.ewma is None:
+            return 0.0
+        return float(self._policy.ewma[self._policy.negative_index])
 
     @property
     def above_seconds(self) -> float:
         """当前负性持续秒数（未达阈值时为 0）。"""
-        if self._above_since is None:
+        if self._policy.above_since is None:
             return 0.0
-        return time.time() - self._above_since
+        return time.time() - self._policy.above_since
 
 
 # ── 共享 DashboardState 写入契约 ──

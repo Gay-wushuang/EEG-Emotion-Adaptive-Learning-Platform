@@ -14,6 +14,8 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+import numpy as np
+
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from services.dashboard_state import (
@@ -187,8 +189,9 @@ class MockDataService(QObject):
         # 概率历史（用于图表绘制）
         s._prob_history.append((time.time(), probs[0], probs[1], probs[2]))
 
-        # 更新持续状态
-        self._update_stable_state(result["ewma_negative"])
+        # 更新持续状态（传入原始概率供 Temporal Policy 使用）
+        raw_probs = np.array(result.get("raw_probabilities", probs))
+        self._update_stable_state(raw_probs)
 
         # 更新反馈文本
         s.feedback_text = self._generate_feedback()
@@ -228,11 +231,15 @@ class MockDataService(QObject):
 
     # ── 持续状态判定（委托给共享 AdaptiveFeedbackEngine）──
 
-    def _update_stable_state(self, negative_ewma: float):
+    def _update_stable_state(self, raw_probabilities: np.ndarray):
         """更新稳定状态和自适应决策。
 
         稳定状态（positive/neutral/negative）仍由 Mock 本地判定；
-        自适应决策（持续负性 + 冷却 + action 选择）委托给共享引擎。
+        自适应决策（EWMA + 持续负性 + 冷却 + action 选择）委托给
+        共享引擎内部的 EWMASustainedNegativeDecision。
+
+        Args:
+            raw_probabilities: 原始三分类概率数组（未经预 EWMA）
         """
         s = self.state
         now = time.time()
@@ -255,10 +262,12 @@ class MockDataService(QObject):
         else:
             s.stable_state = "negative"
 
-        # ── 委托共享引擎做自适应决策 ──
+        # ── 委托共享引擎做自适应决策（单一 EWMA 来源）──
+        # Mock 始终 accepted=True（无 Production Baseline 拒识机制）
         decision = self.engine.decide(
+            probabilities=raw_probabilities,
+            accepted=True,
             quality_level=s.quality_level,
-            negative_prob=negative_ewma,
             attention=s.attention,
             task_difficulty=s.task_difficulty,
             timestamp=now,

@@ -308,7 +308,6 @@ class LiveDataService(QObject):
         self._timer.timeout.connect(self._tick)
         self._last_tick = time.monotonic()
         self._session_running = False
-        self._ewma: np.ndarray | None = None
         self.sessions_dir = Path(package_dir).parent / "data" / "sessions"
         self._session_writer: SessionCsvWriter | None = None
         self._session_csv_path: Path | None = None
@@ -382,7 +381,6 @@ class LiveDataService(QObject):
             self.state.quality_level = "rejected"
             self.state.quality_reasons = [status.get("reason", "等待设备数据")]
             self._accepted_states.clear()
-            self._ewma = None
             self.state.stable_state = None
             # 设备离线时复位自适应引擎
             self.engine.reset()
@@ -464,7 +462,6 @@ class LiveDataService(QObject):
         s.predicted_state = result.display_class
         s.confidence = result.confidence
         s._prob_history.append((time.time(), *probs.tolist()))
-        self._ewma = probs if self._ewma is None else 0.2 * probs + 0.8 * self._ewma
         self._inference_index += 1
         if result.accepted:
             self._accepted_states.append(result.display_class)
@@ -481,20 +478,18 @@ class LiveDataService(QObject):
             s.feedback_text = "当前状态置信度不足，继续观察后再提供学习建议。"
 
         # ── 自适应决策（委托给共享引擎）──
+        # 关键修复：传入 result.accepted，当 Production Baseline 拒识时
+        # Temporal Policy 不更新 EWMA、不累计 sustain、不触发 intervention
         now = time.time()
-        negative_prob = float(probs[2])
-        prev_ewma_val = None
-        if self._ewma is not None:
-            prev_ewma_val = float(self._ewma[2])
 
         decision = self.engine.decide(
+            probabilities=probs,          # 原始概率（Temporal Policy 管理唯一 EWMA）
+            accepted=result.accepted,      # Production Baseline 接受标志
             quality_level=s.quality_level,
-            negative_prob=negative_prob,
             attention=s.attention,
             task_difficulty=s.task_difficulty,
             timestamp=now,
             warmup_complete=s.warmup_complete,
-            prev_ewma=prev_ewma_val,
         )
 
         # 同步引擎状态到 DashboardState
