@@ -29,6 +29,35 @@ INFERENCE_INTERVAL = 2.0      # 2秒推理间隔
 MOCK_UI_REFRESH_HZ = 10       # Mock模式UI刷新率
 DEVICE_TARGET_SAMPLE_HZ = 512  # 设备目标采样率（仅信息展示，Mock不等于真实采样）
 
+# ── 学习任务难度枚举（业务层只允许这三个值）──
+DIFFICULTY_EASY = "easy"
+DIFFICULTY_MEDIUM = "medium"
+DIFFICULTY_HARD = "hard"
+DIFFICULTY_LEVELS = (DIFFICULTY_EASY, DIFFICULTY_MEDIUM, DIFFICULTY_HARD)
+DIFFICULTY_DISPLAY = {
+    DIFFICULTY_EASY: "简单",
+    DIFFICULTY_MEDIUM: "中等",
+    DIFFICULTY_HARD: "困难",
+}
+
+# ── 自适应动作枚举（决策层 → 学习场景正式契约）──
+# maintain: 维持当前任务和难度，只更新反馈
+# reduce_difficulty: hard→medium 或 medium→easy
+# suggest_break: 已为 easy 时的替代动作，给出休息建议，不结束会话、不删除任务
+class AdaptiveAction:
+    NONE = "none"                       # 默认：无动作
+    MAINTAIN = "maintain"
+    REDUCE_DIFFICULTY = "reduce_difficulty"
+    SUGGEST_BREAK = "suggest_break"
+    ALL = (NONE, MAINTAIN, REDUCE_DIFFICULTY, SUGGEST_BREAK)
+
+ADAPTIVE_ACTION_DISPLAY = {
+    AdaptiveAction.NONE: "无",
+    AdaptiveAction.MAINTAIN: "维持当前任务",
+    AdaptiveAction.REDUCE_DIFFICULTY: "降低任务难度",
+    AdaptiveAction.SUGGEST_BREAK: "建议休息",
+}
+
 
 @dataclass
 class EventMarker:
@@ -108,6 +137,17 @@ class DashboardState(QObject):
     _baseline_elapsed: float
     _baseline_target: float
 
+    # ── 自适应学习场景正式字段（AGENTS.md 第6节：新增字段须向后兼容）──
+    # 这五个字段把"决策层 → 学习场景"的接口暴露给 UI，
+    # 避免后台服务直接操作 QWidget。
+    task_type: str                          # 当前任务类型（如"数学练习"）
+    task_difficulty: str                   # easy | medium | hard
+    task_running: bool                     # 当前任务是否进行中
+    adaptive_action: str                   # AdaptiveAction.* 之一
+    adaptive_action_reason: str            # 触发原因（中文展示用）
+    adaptive_action_time: Optional[float]  # 最近一次动作时间戳
+    adaptive_feedback_text: str            # AI 反馈文本（中文）
+
     # ── 持续状态簿记 ──
     _negative_sustain_seconds: float
     _intervention_triggered: bool
@@ -136,6 +176,15 @@ class DashboardState(QObject):
         self.meditation = None
         self.feedback_text = "等待信号稳定后将生成学习建议。"
         self.session_seconds = 0.0
+
+        # 自适应学习场景字段（默认安全值）
+        self.task_type = "自由学习"
+        self.task_difficulty = DIFFICULTY_MEDIUM
+        self.task_running = False
+        self.adaptive_action = AdaptiveAction.NONE
+        self.adaptive_action_reason = ""
+        self.adaptive_action_time = None
+        self.adaptive_feedback_text = ""
 
         # 内部簿记
         self._eeg_raw_buffer = deque(maxlen=512 * 5)
@@ -226,3 +275,11 @@ class DashboardState(QObject):
         self.predicted_state = None
         self.confidence = None
         self.run_id = uuid.uuid4().hex[:12]
+
+        # 复位自适应决策状态：task_type/task_difficulty 是用户选择，保留；
+        # 但 task_running / adaptive_* 复位，避免新会话残留上次决策。
+        self.task_running = False
+        self.adaptive_action = AdaptiveAction.NONE
+        self.adaptive_action_reason = ""
+        self.adaptive_action_time = None
+        self.adaptive_feedback_text = ""

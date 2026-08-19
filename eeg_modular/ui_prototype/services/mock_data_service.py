@@ -18,6 +18,8 @@ from services.dashboard_state import (
     DashboardState, WARMUP_SECONDS, MAX_POOR_SIGNAL,
     CLASS_NAMES, INFERENCE_INTERVAL, MOCK_UI_REFRESH_HZ,
     DEVICE_TARGET_SAMPLE_HZ,
+    DIFFICULTY_EASY, DIFFICULTY_MEDIUM, DIFFICULTY_HARD,
+    DIFFICULTY_DISPLAY, AdaptiveAction,
 )
 from services.eeg_acquisition import EEGAcquisitionWorker, AcquisitionConfig
 from services.inference_service import InferenceWorker, compute_quality
@@ -100,25 +102,27 @@ class MockDataService(QObject):
     def _on_acq_data(self, snap):
         """采集线程推送新数据。
 
-        设备离线时不更新 poor_signal，保持 None，
-        避免出现"Poor Signal 0（合格）"与"设备离线"并存的矛盾状态。
+        设备离线时不更新 poor_signal / attention / meditation，保持 None，
+        避免出现"设备离线"与"Attention=72"并存的矛盾状态，
+        也防止 _apply_adaptive_action 用残留的 attention 误判"Attention 偏低"。
         """
         s = self.state
 
-        # 仅当设备真正在线时才接受 poor_signal 数据
+        # 仅当设备真正在线时才接受 poor_signal / attention / meditation
         device_online = (
             s.device_status == "online" and s.connector_status == "online"
         )
         if device_online:
             s.poor_signal = snap.poor_signal
+            s.attention = float(snap.attention)
+            s.meditation = float(snap.meditation)
+            s._eeg_raw_buffer.append(snap.raw)
+            s._attention_history.append(snap.attention)
+            s._meditation_history.append(snap.meditation)
         else:
             s.poor_signal = None
-
-        s.attention = float(snap.attention)
-        s.meditation = float(snap.meditation)
-        s._eeg_raw_buffer.append(snap.raw)
-        s._attention_history.append(snap.attention)
-        s._meditation_history.append(snap.meditation)
+            s.attention = None
+            s.meditation = None
 
         # 质量等级计算
         if device_online:
@@ -140,9 +144,12 @@ class MockDataService(QObject):
         s.device_status = status.get("device_status", "offline")
         s.mode = status.get("mode", "live")
 
-        # 设备离线时：清空 poor_signal，强制标记质量为 rejected
+        # 设备离线时：清空 poor_signal / attention / meditation，
+        # 强制标记质量为 rejected
         if s.device_status != "online" or s.connector_status != "online":
             s.poor_signal = None
+            s.attention = None
+            s.meditation = None
             s.quality_level = "rejected"
             s.quality_reasons = ["设备未连接"]
 
@@ -246,13 +253,79 @@ class MockDataService(QObject):
                 s._intervention_cooldown = False
                 self._last_intervention = now
                 self._above_since = None
-                s.add_event("消极状态持续干预", "intervention", "连续消极超过20秒，触发干预建议")
+                # 触发正式自适应动作：降低难度 / 建议休息
+                # （一次决策只产生一次 event，见 _apply_adaptive_action）
+                self._apply_adaptive_action()
             elif not cooled:
                 s._intervention_cooldown = True
         else:
             self._above_since = None
             s._negative_sustain_seconds = 0.0
             s._intervention_triggered = False
+
+    # ── 自适应决策（决策层 → 学习场景正式接口）──
+
+    def _apply_adaptive_action(self):
+        """根据当前 task_difficulty 执行最小自适应动作。
+
+        前置条件：调用方已确保 inference_eligible 且持续消极触发条件已满足。
+        一次决策只产生一次 intervention event，避免 UI 刷新重复写入。
+
+        - hard  → medium，reduce_difficulty
+        - medium → easy，reduce_difficulty
+        - easy  → suggest_break（不继续降低，不结束会话）
+        """
+        s = self.state
+        now = time.time()
+
+        # 安全护栏：信号 rejected 不得触发任何自适应动作
+        if s.quality_level == "rejected":
+            return
+
+        att_low = s.attention is not None and s.attention < 50.0
+        reason_neg = "持续负性状态趋势"
+        reason_att = "且 Attention 偏低" if att_low else ""
+        reason_full = f"{reason_neg}{reason_att}"
+
+        prev_diff = s.task_difficulty
+        if prev_diff == DIFFICULTY_HARD:
+            s.task_difficulty = DIFFICULTY_MEDIUM
+            s.adaptive_action = AdaptiveAction.REDUCE_DIFFICULTY
+            s.adaptive_action_reason = reason_full
+            prev_disp = DIFFICULTY_DISPLAY[DIFFICULTY_HARD]
+            new_disp = DIFFICULTY_DISPLAY[DIFFICULTY_MEDIUM]
+            s.adaptive_feedback_text = (
+                "当前任务已从“" + prev_disp + "”调整为“" + new_disp + "”"
+            )
+            label = "自适应降低任务难度"
+            note = (
+                prev_disp + " -> " + new_disp
+                + "；原因：" + reason_full
+            )
+        elif prev_diff == DIFFICULTY_MEDIUM:
+            s.task_difficulty = DIFFICULTY_EASY
+            s.adaptive_action = AdaptiveAction.REDUCE_DIFFICULTY
+            s.adaptive_action_reason = reason_full
+            prev_disp = DIFFICULTY_DISPLAY[DIFFICULTY_MEDIUM]
+            new_disp = DIFFICULTY_DISPLAY[DIFFICULTY_EASY]
+            s.adaptive_feedback_text = (
+                "当前任务已从“" + prev_disp + "”调整为“" + new_disp + "”"
+            )
+            label = "自适应降低任务难度"
+            note = (
+                prev_disp + " -> " + new_disp
+                + "；原因：" + reason_full
+            )
+        else:  # easy：不继续降低，转为建议休息
+            s.adaptive_action = AdaptiveAction.SUGGEST_BREAK
+            s.adaptive_action_reason = "学习状态持续不佳，已为最低难度"
+            s.adaptive_feedback_text = "当前任务已为最低难度，建议短暂休息后继续"
+            label = "建议短暂休息"
+            note = "当前已为最低任务难度，进入休息建议"
+
+        s.adaptive_action_time = now
+        # 一次决策只产生一次 event
+        s.add_event(label, "intervention", note)
 
     # ── 反馈文本生成 ──
 

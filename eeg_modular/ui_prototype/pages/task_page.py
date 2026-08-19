@@ -3,6 +3,12 @@
 严格遵循 eeg_modular/ui_prototype/services/dashboard_state.py 中定义的
 DashboardState 正式字段接口。UI 业务逻辑只消费正式字段，
 内部簿记字段（_前缀）仅用于事件列表等簿记操作。
+
+自适应学习场景：
+- TaskPage 是 DashboardState 的状态消费者，不直接被后台服务调用；
+- 任务类型/难度由 QComboBox 与 state.task_type / state.task_difficulty 双向同步；
+- 自适应反馈区只展示 state.adaptive_* 字段，不参与决策逻辑；
+- 信号质量 rejected 时，自适应反馈区不显示任何学习状态解释。
 """
 
 from __future__ import annotations
@@ -17,13 +23,26 @@ from PySide6.QtWidgets import (
 
 from pages.base_page import BasePage
 from widgets.card import Card
-from services.dashboard_state import CLASS_DISPLAY
+from services.dashboard_state import (
+    CLASS_DISPLAY,
+    DIFFICULTY_LEVELS, DIFFICULTY_DISPLAY,
+    DIFFICULTY_EASY, DIFFICULTY_MEDIUM, DIFFICULTY_HARD,
+    AdaptiveAction, ADAPTIVE_ACTION_DISPLAY,
+)
 
 
 TASK_TYPES = [
     "数学练习", "英语阅读", "编程任务", "物理复习",
     "语文写作", "专注冥想", "记忆训练", "自由学习",
 ]
+
+# 业务层难度 <-> UI 索引映射（仅一处真相来源）
+_DIFFICULTY_INDEX = {
+    DIFFICULTY_EASY: 0,
+    DIFFICULTY_MEDIUM: 1,
+    DIFFICULTY_HARD: 2,
+}
+_INDEX_DIFFICULTY = {v: k for k, v in _DIFFICULTY_INDEX.items()}
 
 QUICK_EVENTS = [
     ("开始专注", "user", "#4ADE80"),
@@ -41,11 +60,15 @@ class TaskPage(BasePage):
         self.service = service
         self._task_start = 0.0
         self._task_active = False
+        # 防止程序同步 ComboBox 时回流触发用户回调
+        self._syncing_combo = False
         super().__init__(
             "学习任务与事件标记",
             "管理学习任务并记录关键事件，用于后续会话分析与报告。"
         )
         self._build_ui()
+        # 初始同步一次：state -> ComboBox
+        self._sync_combos_from_state()
 
     def _build_ui(self):
         splitter = QSplitter(Qt.Horizontal)
@@ -64,12 +87,25 @@ class TaskPage(BasePage):
         task_form.addWidget(QLabel("任务类型:"), 0, 0)
         self._combo_task = QComboBox()
         self._combo_task.addItems(TASK_TYPES)
+        # 从 state 初始化选中项
+        if self.state.task_type in TASK_TYPES:
+            self._combo_task.setCurrentIndex(TASK_TYPES.index(self.state.task_type))
+        # 用户改动 -> 写回 state.task_type
+        self._combo_task.currentIndexChanged.connect(self._on_user_changed_task)
         task_form.addWidget(self._combo_task, 0, 1)
 
         task_form.addWidget(QLabel("难度:"), 1, 0)
         self._combo_diff = QComboBox()
-        self._combo_diff.addItems(["简单", "中等", "困难"])
-        self._combo_diff.setCurrentIndex(1)
+        self._combo_diff.addItems([
+            DIFFICULTY_DISPLAY[DIFFICULTY_EASY],
+            DIFFICULTY_DISPLAY[DIFFICULTY_MEDIUM],
+            DIFFICULTY_DISPLAY[DIFFICULTY_HARD],
+        ])
+        # 从 state 初始化
+        idx = _DIFFICULTY_INDEX.get(self.state.task_difficulty, 1)
+        self._combo_diff.setCurrentIndex(idx)
+        # 用户改动 -> 写回 state.task_difficulty
+        self._combo_diff.currentIndexChanged.connect(self._on_user_changed_difficulty)
         task_form.addWidget(self._combo_diff, 1, 1)
 
         task_form.addWidget(QLabel("备注:"), 2, 0)
@@ -79,6 +115,31 @@ class TaskPage(BasePage):
 
         task_card.add_widget(self._wrap(task_form))
         left_layout.addWidget(task_card)
+
+        # AI 自适应反馈卡片（最小、不重做视觉）
+        ai_card = Card("AI 自适应反馈")
+        ai_form = QGridLayout()
+        ai_form.setSpacing(6)
+
+        ai_form.addWidget(QLabel("当前策略:"), 0, 0)
+        self._ai_strategy = QLabel("无")
+        self._ai_strategy.setStyleSheet("color: #4FC3F7; font-size: 13px;")
+        ai_form.addWidget(self._ai_strategy, 0, 1)
+
+        ai_form.addWidget(QLabel("AI 建议:"), 1, 0)
+        self._ai_suggestion = QLabel("--")
+        self._ai_suggestion.setWordWrap(True)
+        self._ai_suggestion.setStyleSheet("color: #E8EDF3; font-size: 13px;")
+        ai_form.addWidget(self._ai_suggestion, 1, 1)
+
+        ai_form.addWidget(QLabel("触发原因:"), 2, 0)
+        self._ai_reason = QLabel("--")
+        self._ai_reason.setWordWrap(True)
+        self._ai_reason.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        ai_form.addWidget(self._ai_reason, 2, 1)
+
+        ai_card.add_widget(self._wrap(ai_form))
+        left_layout.addWidget(ai_card)
 
         # 任务计时
         timer_card = Card("任务计时")
@@ -212,6 +273,7 @@ class TaskPage(BasePage):
             return
         self._task_start = time.time()
         self._task_active = True
+        self.state.task_running = True
         self._btn_task_start.setEnabled(False)
         self._btn_task_stop.setEnabled(True)
         self._task_status.setText("进行中")
@@ -221,11 +283,60 @@ class TaskPage(BasePage):
 
     def _on_task_stop(self):
         self._task_active = False
+        self.state.task_running = False
         self._btn_task_start.setEnabled(True)
         self._btn_task_stop.setEnabled(False)
         self._task_status.setText("已结束")
         self._task_status.setStyleSheet("color: #6B7689; font-size: 14px;")
         self.state.add_event("结束任务", "system")
+
+    # ── 用户改动 ComboBox → 写回 DashboardState ──
+    # 这是 UI 与 state 保持单一真相来源的关键。
+    # 用 _syncing_combo 防止 _sync_combos_from_state 回流触发本回调。
+    def _on_user_changed_task(self, idx: int):
+        if self._syncing_combo:
+            return
+        text = self._combo_task.itemText(idx)
+        if text and self.state.task_type != text:
+            self.state.task_type = text
+            self.state.add_event(f"切换任务类型: {text}", "user")
+
+    def _on_user_changed_difficulty(self, idx: int):
+        if self._syncing_combo:
+            return
+        new_diff = _INDEX_DIFFICULTY.get(idx, DIFFICULTY_MEDIUM)
+        if self.state.task_difficulty != new_diff:
+            old_display = DIFFICULTY_DISPLAY.get(self.state.task_difficulty, "--")
+            new_display = DIFFICULTY_DISPLAY.get(new_diff, "--")
+            self.state.task_difficulty = new_diff
+            self.state.add_event(
+                f"手动调整难度: {old_display} -> {new_display}",
+                "user",
+            )
+
+    def _sync_combos_from_state(self):
+        """state -> ComboBox 单向同步，用 blockSignals 防止回流。
+
+        当 _apply_adaptive_action 修改 state.task_difficulty 后，
+        update_state 调用本方法，让 QComboBox 显示新的正式状态。
+        """
+        self._syncing_combo = True
+        try:
+            # 任务类型
+            if self.state.task_type in TASK_TYPES:
+                target = TASK_TYPES.index(self.state.task_type)
+                if self._combo_task.currentIndex() != target:
+                    self._combo_task.setCurrentIndex(target)
+
+            # 难度
+            target_idx = _DIFFICULTY_INDEX.get(
+                self.state.task_difficulty,
+                _DIFFICULTY_INDEX[DIFFICULTY_MEDIUM],
+            )
+            if self._combo_diff.currentIndex() != target_idx:
+                self._combo_diff.setCurrentIndex(target_idx)
+        finally:
+            self._syncing_combo = False
 
     def _add_quick_event(self, label: str):
         self.state.add_event(label, "user")
@@ -266,6 +377,20 @@ class TaskPage(BasePage):
             secs = int(elapsed) % 60
             self._task_time.setText(f"{mins:02d}:{secs:02d}")
 
+        # 任务运行状态：UI 的 _task_active 跟随 state.task_running
+        # （但若用户未通过按钮开始，UI 不会自动启动）
+        if state.task_running and not self._task_active:
+            # 后台不应直接启动 UI 任务计时，这里只做显示同步
+            self._task_status.setText("进行中")
+            self._task_status.setStyleSheet("color: #4ADE80; font-size: 14px;")
+        elif not state.task_running and self._task_active:
+            # state 被外部复位（如 reset_session），UI 也复位
+            self._task_active = False
+            self._btn_task_start.setEnabled(True)
+            self._btn_task_stop.setEnabled(False)
+            self._task_status.setText("未开始")
+            self._task_status.setStyleSheet("color: #6B7689; font-size: 14px;")
+
         # 当前状态：使用 stable_state 和 inference_eligible
         if state.inference_eligible:
             display = CLASS_DISPLAY.get(state.stable_state, "--")
@@ -294,10 +419,64 @@ class TaskPage(BasePage):
         else:
             self._state_med.setText("Meditation: --")
 
+        # ── 自适应反馈区（双层状态输出：rejected 时不解释）──
+        self._refresh_adaptive_feedback(state)
+
+        # ── state -> ComboBox 单向同步 ──
+        # 当 _apply_adaptive_action 改了 task_difficulty 后，
+        # ComboBox 必须显示新的正式难度。
+        self._sync_combos_from_state()
+
         # 刷新事件表：使用 _events
         if not hasattr(self, "_last_event_count") or self._last_event_count != len(state._events):
             self._refresh_table()
             self._last_event_count = len(state._events)
+
+    def _refresh_adaptive_feedback(self, state):
+        """刷新 AI 自适应反馈卡片。
+
+        严格遵守 AGENTS.md：
+        - quality_level == rejected 时不进行学习状态解释，只显示信号不足提示；
+        - 不使用医疗化措辞；
+        - negative 只表述为"负性状态/趋势"。
+        """
+        if state.quality_level == "rejected":
+            self._ai_strategy.setText("暂不评估")
+            self._ai_strategy.setStyleSheet("color: #6B7689; font-size: 13px;")
+            self._ai_suggestion.setText("当前信号质量不足，暂不进行学习状态解释。")
+            self._ai_suggestion.setStyleSheet("color: #6B7689; font-size: 13px;")
+            self._ai_reason.setText("--")
+            self._ai_reason.setStyleSheet("color: #6B7689; font-size: 12px;")
+            return
+
+        action = state.adaptive_action
+        strategy_text = ADAPTIVE_ACTION_DISPLAY.get(action, "无")
+        color = "#4FC3F7"
+        if action == AdaptiveAction.REDUCE_DIFFICULTY:
+            color = "#FBBF24"  # 琥珀：降低难度
+        elif action == AdaptiveAction.SUGGEST_BREAK:
+            color = "#F87171"  # 红：建议休息（非严重错误，但需注意）
+        elif action == AdaptiveAction.MAINTAIN:
+            color = "#4ADE80"  # 绿：维持
+
+        self._ai_strategy.setText(strategy_text)
+        self._ai_strategy.setStyleSheet(f"color: {color}; font-size: 13px;")
+
+        # AI 建议文本：优先用 adaptive_feedback_text，否则用基础 feedback_text
+        if state.adaptive_feedback_text:
+            self._ai_suggestion.setText(state.adaptive_feedback_text)
+        elif state.inference_eligible:
+            self._ai_suggestion.setText(state.feedback_text or "维持当前学习计划。")
+        else:
+            self._ai_suggestion.setText("等待信号稳定后将生成学习建议。")
+        self._ai_suggestion.setStyleSheet("color: #E8EDF3; font-size: 13px;")
+
+        # 触发原因
+        if state.adaptive_action_reason:
+            self._ai_reason.setText(state.adaptive_action_reason)
+        else:
+            self._ai_reason.setText("--")
+        self._ai_reason.setStyleSheet("color: #94A3B8; font-size: 12px;")
 
     def on_show(self):
         self._refresh_table()
