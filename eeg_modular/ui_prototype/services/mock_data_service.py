@@ -5,6 +5,8 @@
 
 所有写入操作在主线程执行（通过信号槽跨线程传递），
 确保 DashboardState 的线程安全。
+
+自适应决策委托给共享的 AdaptiveFeedbackEngine（与 Live 共用同一套逻辑）。
 """
 
 from __future__ import annotations
@@ -23,8 +25,14 @@ from services.dashboard_state import (
 )
 from services.eeg_acquisition import EEGAcquisitionWorker, AcquisitionConfig
 from services.inference_service import InferenceWorker, compute_quality
+from services.adaptive_feedback_engine import (
+    AdaptiveFeedbackEngine,
+    AdaptiveDecision,
+    apply_adaptive_decision,
+)
 
 
+# 阈值常量保留供外部引用（引擎内部也使用相同值）
 NEGATIVE_THRESHOLD = 0.60
 SUSTAIN_SECONDS = 20.0
 COOLDOWN_SECONDS = 90.0
@@ -42,9 +50,12 @@ class MockDataService(QObject):
         self.acq_worker = EEGAcquisitionWorker(self.acq_config)
         self.inf_worker = InferenceWorker()
 
-        # EWMA 持续状态跟踪
-        self._above_since: Optional[float] = None
-        self._last_intervention: Optional[float] = None
+        # 共享自适应反馈引擎（与 Live 共用同一套决策逻辑）
+        self.engine = AdaptiveFeedbackEngine(
+            negative_threshold=NEGATIVE_THRESHOLD,
+            sustain_seconds=SUSTAIN_SECONDS,
+            cooldown_seconds=COOLDOWN_SECONDS,
+        )
 
         # 连接信号
         self.acq_worker.data_ready.connect(self._on_acq_data)
@@ -215,20 +226,26 @@ class MockDataService(QObject):
 
         s.emit_update()
 
-    # ── 持续状态判定 ──
+    # ── 持续状态判定（委托给共享 AdaptiveFeedbackEngine）──
 
     def _update_stable_state(self, negative_ewma: float):
+        """更新稳定状态和自适应决策。
+
+        稳定状态（positive/neutral/negative）仍由 Mock 本地判定；
+        自适应决策（持续负性 + 冷却 + action 选择）委托给共享引擎。
+        """
         s = self.state
         now = time.time()
 
         if not s.inference_eligible:
-            self._above_since = None
-            s._negative_sustain_seconds = 0.0
-            s._intervention_triggered = False
             s.stable_state = None
+            s._intervention_triggered = False
+            s._intervention_cooldown = False
+            s._negative_sustain_seconds = 0.0
+            self.engine.reset()
             return
 
-        # 判定当前主导状态
+        # 判定当前主导状态（仍由 Mock 本地做，与 UI 直接挂钩）
         if s.prob_positive is not None and s.prob_positive >= max(
             s.prob_neutral or 0, s.prob_negative or 0
         ):
@@ -238,94 +255,48 @@ class MockDataService(QObject):
         else:
             s.stable_state = "negative"
 
-        # 持续消极判定
-        if negative_ewma >= NEGATIVE_THRESHOLD:
-            if self._above_since is None:
-                self._above_since = now
-            s._negative_sustain_seconds = now - self._above_since
+        # ── 委托共享引擎做自适应决策 ──
+        decision = self.engine.decide(
+            quality_level=s.quality_level,
+            negative_prob=negative_ewma,
+            attention=s.attention,
+            task_difficulty=s.task_difficulty,
+            timestamp=now,
+            warmup_complete=s.warmup_complete,
+        )
 
-            cooled = (
-                self._last_intervention is None
-                or now - self._last_intervention >= COOLDOWN_SECONDS
-            )
-            if s._negative_sustain_seconds >= SUSTAIN_SECONDS and cooled:
-                s._intervention_triggered = True
-                s._intervention_cooldown = False
-                self._last_intervention = now
-                self._above_since = None
-                # 触发正式自适应动作：降低难度 / 建议休息
-                # （一次决策只产生一次 event，见 _apply_adaptive_action）
-                self._apply_adaptive_action()
-            elif not cooled:
-                s._intervention_cooldown = True
+        # 同步引擎状态到 DashboardState（供 _generate_feedback 和 UI 使用）
+        s._negative_sustain_seconds = decision.above_seconds
+        s._intervention_cooldown = decision.in_cooldown
+
+        if decision.should_emit_event:
+            s._intervention_triggered = True
+            self._apply_adaptive_action(decision)
         else:
-            self._above_since = None
-            s._negative_sustain_seconds = 0.0
             s._intervention_triggered = False
 
-    # ── 自适应决策（决策层 → 学习场景正式接口）──
+    # ── 自适应决策应用（决策层 → 学习场景正式接口）──
 
-    def _apply_adaptive_action(self):
-        """根据当前 task_difficulty 执行最小自适应动作。
+    def _apply_adaptive_action(self, decision: Optional[AdaptiveDecision] = None):
+        """将 AdaptiveDecision 写入 DashboardState（委托给共享契约）。
 
-        前置条件：调用方已确保 inference_eligible 且持续消极触发条件已满足。
-        一次决策只产生一次 intervention event，避免 UI 刷新重复写入。
+        两种调用方式：
+        1. 由 _update_stable_state 传入引擎决策（正式路径）
+        2. 直接调用时从当前 state 构造决策（向后兼容测试）
 
-        - hard  → medium，reduce_difficulty
-        - medium → easy，reduce_difficulty
-        - easy  → suggest_break（不继续降低，不结束会话）
+        实际写入逻辑由 apply_adaptive_decision() 统一处理，
+        确保 Mock 与 Live 的 DashboardState 写入契约完全一致。
         """
         s = self.state
-        now = time.time()
 
-        # 安全护栏：信号 rejected 不得触发任何自适应动作
-        if s.quality_level == "rejected":
-            return
+        # 如果没有传入决策，从当前 state 构造（向后兼容测试）
+        if decision is None:
+            decision = self.engine.select_action(
+                s.task_difficulty, s.attention
+            )
 
-        att_low = s.attention is not None and s.attention < 50.0
-        reason_neg = "持续负性状态趋势"
-        reason_att = "且 Attention 偏低" if att_low else ""
-        reason_full = f"{reason_neg}{reason_att}"
-
-        prev_diff = s.task_difficulty
-        if prev_diff == DIFFICULTY_HARD:
-            s.task_difficulty = DIFFICULTY_MEDIUM
-            s.adaptive_action = AdaptiveAction.REDUCE_DIFFICULTY
-            s.adaptive_action_reason = reason_full
-            prev_disp = DIFFICULTY_DISPLAY[DIFFICULTY_HARD]
-            new_disp = DIFFICULTY_DISPLAY[DIFFICULTY_MEDIUM]
-            s.adaptive_feedback_text = (
-                "当前任务已从“" + prev_disp + "”调整为“" + new_disp + "”"
-            )
-            label = "自适应降低任务难度"
-            note = (
-                prev_disp + " -> " + new_disp
-                + "；原因：" + reason_full
-            )
-        elif prev_diff == DIFFICULTY_MEDIUM:
-            s.task_difficulty = DIFFICULTY_EASY
-            s.adaptive_action = AdaptiveAction.REDUCE_DIFFICULTY
-            s.adaptive_action_reason = reason_full
-            prev_disp = DIFFICULTY_DISPLAY[DIFFICULTY_MEDIUM]
-            new_disp = DIFFICULTY_DISPLAY[DIFFICULTY_EASY]
-            s.adaptive_feedback_text = (
-                "当前任务已从“" + prev_disp + "”调整为“" + new_disp + "”"
-            )
-            label = "自适应降低任务难度"
-            note = (
-                prev_disp + " -> " + new_disp
-                + "；原因：" + reason_full
-            )
-        else:  # easy：不继续降低，转为建议休息
-            s.adaptive_action = AdaptiveAction.SUGGEST_BREAK
-            s.adaptive_action_reason = "学习状态持续不佳，已为最低难度"
-            s.adaptive_feedback_text = "当前任务已为最低难度，建议短暂休息后继续"
-            label = "建议短暂休息"
-            note = "当前已为最低任务难度，进入休息建议"
-
-        s.adaptive_action_time = now
-        # 一次决策只产生一次 event
-        s.add_event(label, "intervention", note)
+        # 委托给共享写入契约
+        apply_adaptive_decision(s, decision)
 
     # ── 反馈文本生成 ──
 

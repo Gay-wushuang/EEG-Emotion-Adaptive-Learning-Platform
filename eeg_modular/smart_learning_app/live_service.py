@@ -1,4 +1,7 @@
-"""Real ThinkGear acquisition and Production Baseline v1 orchestration."""
+"""Real ThinkGear acquisition and Production Baseline v1 orchestration.
+
+自适应决策委托给共享的 AdaptiveFeedbackEngine（与 Mock 共用同一套逻辑）。
+"""
 
 from __future__ import annotations
 
@@ -10,11 +13,21 @@ import threading
 import time
 from collections import Counter, deque
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
-from services.dashboard_state import DashboardState, MAX_POOR_SIGNAL
+from services.dashboard_state import (
+    DashboardState, MAX_POOR_SIGNAL,
+    DIFFICULTY_EASY, DIFFICULTY_MEDIUM, DIFFICULTY_HARD,
+    DIFFICULTY_DISPLAY, AdaptiveAction,
+)
+from services.adaptive_feedback_engine import (
+    AdaptiveFeedbackEngine,
+    AdaptiveDecision,
+    apply_adaptive_decision,
+)
 from smart_learning_app.inference_engine import ProductionInferenceEngine
 
 
@@ -274,7 +287,10 @@ class ProductionInferenceWorker(QThread):
 
 
 class LiveDataService(QObject):
-    """Main-thread adapter from real workers to DashboardState."""
+    """Main-thread adapter from real workers to DashboardState.
+
+    自适应决策通过共享 AdaptiveFeedbackEngine 实现，与 Mock 共用同一套逻辑。
+    """
 
     def __init__(self, state: DashboardState, package_dir: Path, parent=None):
         super().__init__(parent)
@@ -299,6 +315,13 @@ class LiveDataService(QObject):
         self._session_raw_origin = 0
         self._accepted_states = deque(maxlen=45)  # 90 s at a 2 s inference step
         self._inference_index = 0
+
+        # 共享自适应反馈引擎（与 Mock 共用同一套决策逻辑）
+        self.engine = AdaptiveFeedbackEngine(
+            negative_threshold=0.60,
+            sustain_seconds=20.0,
+            cooldown_seconds=90.0,
+        )
 
     def start_streaming(self) -> None:
         if not self.inference.isRunning():
@@ -361,6 +384,11 @@ class LiveDataService(QObject):
             self._accepted_states.clear()
             self._ewma = None
             self.state.stable_state = None
+            # 设备离线时复位自适应引擎
+            self.engine.reset()
+            self.state._intervention_triggered = False
+            self.state._intervention_cooldown = False
+            self.state._negative_sustain_seconds = 0.0
         self.state.emit_update()
 
     def _on_batch(self, batch: dict) -> None:
@@ -451,6 +479,34 @@ class LiveDataService(QObject):
             # Rejected predictions are not votes and do not erase prior valid evidence.
             s.stable_state = s.stable_state if self._accepted_states else None
             s.feedback_text = "当前状态置信度不足，继续观察后再提供学习建议。"
+
+        # ── 自适应决策（委托给共享引擎）──
+        now = time.time()
+        negative_prob = float(probs[2])
+        prev_ewma_val = None
+        if self._ewma is not None:
+            prev_ewma_val = float(self._ewma[2])
+
+        decision = self.engine.decide(
+            quality_level=s.quality_level,
+            negative_prob=negative_prob,
+            attention=s.attention,
+            task_difficulty=s.task_difficulty,
+            timestamp=now,
+            warmup_complete=s.warmup_complete,
+            prev_ewma=prev_ewma_val,
+        )
+
+        # 同步引擎状态到 DashboardState
+        s._negative_sustain_seconds = decision.above_seconds
+        s._intervention_cooldown = decision.in_cooldown
+
+        if decision.should_emit_event:
+            s._intervention_triggered = True
+            self._apply_adaptive_action(decision)
+        else:
+            s._intervention_triggered = False
+
         s.emit_update()
 
     def _on_error(self, message: str) -> None:
@@ -463,6 +519,16 @@ class LiveDataService(QObject):
         if self._session_running:
             self.state.session_seconds += dt
         self.state.emit_update()
+
+    # ── 自适应决策应用（与 Mock 共用相同的 DashboardState 写入契约）──
+
+    def _apply_adaptive_action(self, decision: AdaptiveDecision) -> None:
+        """将 AdaptiveDecision 写入 DashboardState（委托给共享契约）。
+
+        实际写入逻辑由 apply_adaptive_decision() 统一处理，
+        确保 Mock 与 Live 的 DashboardState 写入契约完全一致。
+        """
+        apply_adaptive_decision(self.state, decision)
 
     @staticmethod
     def _feedback(state: str) -> str:
