@@ -169,8 +169,16 @@ class TestMainWindowModes(unittest.TestCase):
         """Live 模式在 production 包不存在时回退到 Mock，且 _mode 改为 mock。
 
         绝不允许在 Mock service 上显示 Live 标签。
+        回退完成后：
+        - service 是 MockDataService
+        - window._mode == "mock"
+        - state.mode == "mock"
+        - 侧边栏包含 Mock
+        - 状态栏包含 Mock
+        - 任何地方都不出现 "Live · 真实EEG"
         """
         from main_window import MainWindow
+        from PySide6.QtWidgets import QApplication
 
         with patch(
             'smart_learning_app.live_service.ThinkGearLiveWorker',
@@ -192,6 +200,11 @@ class TestMainWindowModes(unittest.TestCase):
                     window._mode, "mock",
                     "回退后 _mode 必须改为 mock，不能保留 live"
                 )
+                # state.mode 必须同步改为 mock
+                self.assertEqual(
+                    window.state.mode, "mock",
+                    "回退后 state.mode 必须为 'mock'，不能为 'live'"
+                )
                 # state 应记录回退原因
                 self.assertTrue(
                     hasattr(window.state, '_live_fallback_reason'),
@@ -212,6 +225,23 @@ class TestMainWindowModes(unittest.TestCase):
                 self.assertIn(
                     "Mock", sidebar_text,
                     f"回退后侧边栏应显示 Mock，实际: '{sidebar_text}'"
+                )
+
+                # 状态栏也不应出现 "Live · 真实EEG"
+                mode_label = window._sb_mode.text()
+                self.assertNotIn(
+                    "真实EEG", mode_label,
+                    f"回退后状态栏不应显示 '真实EEG'，实际: '{mode_label}'"
+                )
+                # 触发状态更新让 Mock 采集线程的信号到达
+                for _ in range(5):
+                    QApplication.processEvents()
+                    self.app.processEvents()
+                    time.sleep(0.05)
+                mode_label = window._sb_mode.text()
+                self.assertIn(
+                    "Mock", mode_label,
+                    f"回退后状态栏应包含 Mock，实际: '{mode_label}'"
                 )
             finally:
                 window.service.stop_streaming()
@@ -272,15 +302,26 @@ class TestMainWindowModes(unittest.TestCase):
             window.deleteLater()
 
     def test_A8_both_modes_share_dashboard_state(self):
-        """Mock 和 Live 模式共用同一 DashboardState 接口。"""
+        """Mock 和 Live 模式共用同一 DashboardState 接口。
+
+        Mock 模式：真实采集线程 status_changed 会将 mode 设为 "mock"，
+        不能再断言为 "live"。必须 processEvents 让信号传递。
+        """
         from main_window import MainWindow
         from services.dashboard_state import DashboardState
+        from PySide6.QtWidgets import QApplication
 
         # Mock 模式
         mock_window = MainWindow(mode="mock")
         try:
             self.assertIsInstance(mock_window.state, DashboardState)
-            self.assertEqual(mock_window.state.mode, "live")
+            # 处理 Qt 事件让 status_changed 信号到达
+            QApplication.processEvents()
+            # Mock 模式下 state.mode 应为 "mock"（由 _mock_loop status_changed 路径设置）
+            self.assertEqual(
+                mock_window.state.mode, "mock",
+                f"Mock 模式下 state.mode 应为 'mock'，实际: '{mock_window.state.mode}'"
+            )
             self.assertEqual(mock_window.state.connector_status, "offline")
             self.assertEqual(mock_window.state.device_status, "offline")
         finally:
@@ -461,23 +502,42 @@ class TestMainWindowModes(unittest.TestCase):
                 window.deleteLater()
 
     def test_A12_mock_status_bar_has_mock_text(self):
-        """Mock 模式状态栏应明确标识 Mock。"""
+        """Mock 模式状态栏应明确标识 Mock（真实 status_changed 路径）。
+
+        不手工设置 s.mode，让真实 _mock_loop status_changed 信号
+        经 Qt 事件循环传递到 DashboardState → 状态栏。
+        """
         from main_window import MainWindow
+        from PySide6.QtWidgets import QApplication
 
         window = MainWindow(mode="mock")
         try:
             s = window.state
-            s.mode = "mock"
-            s.connector_status = "offline"
-            s.device_status = "offline"
-            s.quality_level = "rejected"
+            # 等待 status_changed 信号到达
+            for _ in range(5):
+                QApplication.processEvents()
+                self.app.processEvents()
+                time.sleep(0.05)
 
+            # 验证 state.mode 已由真实路径设置为 "mock"
+            self.assertEqual(
+                s.mode, "mock",
+                f"Mock 模式下 state.mode 应为 'mock'，实际: '{s.mode}'"
+            )
+
+            # 触发状态栏更新（通过 emit_update）
             s.emit_update()
+            QApplication.processEvents()
+            self.app.processEvents()
 
             mode_label = window._sb_mode.text()
             self.assertIn(
                 "Mock", mode_label,
                 f"Mock 状态栏应包含 Mock，实际: '{mode_label}'"
+            )
+            self.assertNotIn(
+                "Live", mode_label,
+                f"Mock 状态栏不应包含 Live，实际: '{mode_label}'"
             )
         finally:
             window.service.stop_streaming()

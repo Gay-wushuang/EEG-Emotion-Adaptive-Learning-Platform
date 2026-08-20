@@ -185,6 +185,16 @@ def diagnose(
             sock.close()
             return None
 
+    # 检查 TCP 是否在第一条 rawEeg 到来前提前关闭
+    if not first_raw_received or first_raw_time is None:
+        print("[ERROR] TCP 连接在第一条 rawEeg 到达前已关闭。")
+        print("请检查 ThinkGear Connector 和设备连接状态。")
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return None
+
     print(f"[INFO] 第一条 rawEeg 到达 (startup delay: {startup_delay:.1f}s)")
     print(f"[INFO] 开始有效采集 {duration:.1f} 秒...")
 
@@ -283,7 +293,9 @@ def diagnose(
         if rate < RATE_LOW or rate > RATE_HIGH:
             warnings.append(f"第 {i+1} 秒: {classify_rate(rate)}")
 
-    passed = RATE_LOW <= mean_rate <= RATE_HIGH
+    # 最终通过标准：以 active_raw_rate_hz 为主判定值
+    # active_raw_rate_hz = raw_count / active_duration，不受每秒 bucket 波动影响
+    passed = RATE_LOW <= active_raw_rate_hz <= RATE_HIGH
 
     report = SampleRateReport(
         startup_delay_seconds=startup_delay,

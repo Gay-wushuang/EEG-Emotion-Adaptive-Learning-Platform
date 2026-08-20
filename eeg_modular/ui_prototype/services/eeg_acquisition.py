@@ -95,7 +95,7 @@ class EEGAcquisitionWorker(QThread):
         self.status_changed.emit({
             "connector_status": "offline",
             "device_status": "offline",
-            "mode": "live",
+            "mode": "mock",
             "data_source": "mock",
             "note": "Mock模式 - 未接入真实设备",
         })

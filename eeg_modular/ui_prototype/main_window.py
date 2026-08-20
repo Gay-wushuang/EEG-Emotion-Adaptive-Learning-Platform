@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
         if not package_dir.exists():
             # 明确切换到 Mock 模式，防止侧边栏/状态栏误标 Live
             self._mode = "mock"
+            self.state.mode = "mock"  # 立即同步状态，避免短暂的错误状态
             self.state._live_fallback_reason = str(package_dir)
             self.state.quality_level = "rejected"
             self.state.quality_reasons = [
