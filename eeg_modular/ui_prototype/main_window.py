@@ -9,6 +9,10 @@
   - _session_active: bool（内部簿记）
   - mode: live | replay（mock 模式由采集线程报告为 "mock"）
 
+支持两种模式：
+  - mode="mock"  → MockDataService（模拟数据，无需设备）
+  - mode="live"  → LiveDataService（真实 ThinkGear + Production Baseline v1）
+
 Mock 模式下 connector_status / device_status 均为 offline，
 状态栏不会将设备显示为已连接，以避免误导用户。
 """
@@ -16,7 +20,8 @@ Mock 模式下 connector_status / device_status 均为 offline，
 from __future__ import annotations
 
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Literal
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QFont, QIcon
@@ -45,6 +50,9 @@ from pages.history_page import HistoryPage
 from pages.settings_page import SettingsPage
 from pages.replay_page import ReplayPage
 
+# Production Baseline v1 包路径（相对于项目根目录）
+_PRODUCTION_PACKAGE_DIR = Path(__file__).resolve().parent.parent / "production_baseline_v1"
+
 
 NAV_ITEMS = [
     ("welcome", "欢迎与设备检查", "1"),
@@ -58,19 +66,36 @@ NAV_ITEMS = [
 
 
 class MainWindow(QMainWindow):
-    """主窗口。"""
+    """主窗口。
 
-    def __init__(self):
+    Args:
+        mode: "mock" 使用 MockDataService（默认，无需设备）
+              "live" 使用 LiveDataService（真实 ThinkGear + Production Baseline v1）
+        package_dir: Production Baseline v1 包路径（仅 live 模式需要）
+    """
+
+    def __init__(
+        self,
+        mode: Literal["mock", "live"] = "mock",
+        package_dir: Optional[Path] = None,
+    ):
         super().__init__()
         ensure_chinese_font()
+        self._mode = mode
         self.setWindowTitle("智学脑机助手 - 单通道脑机接口学习状态辅助系统")
         self.resize(1920, 1080)
         self.setMinimumSize(1280, 700)
 
         # ── 核心状态与服务 ──
         self.state = DashboardState()
-        self.service = MockDataService(self.state)
-        self.service.start_streaming()
+
+        if mode == "live":
+            # Live 模式：接入真实 ThinkGear + Production Baseline v1
+            self._init_live_service(package_dir)
+        else:
+            # Mock 模式：默认，无需设备
+            self.service = MockDataService(self.state)
+            self.service.start_streaming()
 
         # ── UI 构建 ──
         root = QWidget()
@@ -109,6 +134,36 @@ class MainWindow(QMainWindow):
         # 默认显示欢迎页
         self._navigate_to("welcome")
 
+    def _init_live_service(self, package_dir: Optional[Path]) -> None:
+        """初始化 Live 服务：加载 Production Baseline v1 包并启动。
+
+        若 package_dir 为 None，使用默认路径 eeg_modular/production_baseline_v1。
+        若包不存在，回退到 Mock 模式并在状态栏提示。
+        """
+        if package_dir is None:
+            package_dir = _PRODUCTION_PACKAGE_DIR
+
+        package_dir = Path(package_dir).resolve()
+
+        # 检查生产包是否存在
+        if not package_dir.exists():
+            import warnings
+            warnings.warn(
+                f"Production Baseline v1 包未找到: {package_dir}，"
+                f"回退到 Mock 模式。"
+            )
+            self.service = MockDataService(self.state)
+            self.service.start_streaming()
+            self.state._live_fallback_reason = str(package_dir)
+            return
+
+        # 延迟导入 LiveDataService（避免 Mock 模式不必要的依赖）
+        from smart_learning_app.live_service import LiveDataService
+
+        self.service = LiveDataService(self.state, package_dir)
+        self.state._production_package_dir = str(package_dir)
+        self.service.start_streaming()
+
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("SideBar")
@@ -145,8 +200,12 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        # 底部版本信息（明确标注 Mock 演示数据）
-        version = QLabel("v1.0.0  |  Mock模式 - 演示数据")
+        # 底部版本信息（标注当前模式）
+        if self._mode == "live":
+            mode_label = "v1.0.0  |  Live模式 - 真实设备"
+        else:
+            mode_label = "v1.0.0  |  Mock模式 - 演示数据"
+        version = QLabel(mode_label)
         version.setObjectName("AppSubtitle")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
