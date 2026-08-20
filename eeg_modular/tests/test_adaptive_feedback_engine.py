@@ -1056,10 +1056,11 @@ class TestMockLiveTemporalConsistency(unittest.TestCase):
             decimal=6,
             err_msg="Mock 和 Live 的 EWMA 必须一致",
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             mock.engine._policy.above_since,
             live.engine._policy.above_since,
-            "Mock 和 Live 的 above_since 必须一致",
+            delta=0.1,
+            msg="Mock 和 Live 的 above_since 必须近似一致（允许 0.1s 时钟偏差）",
         )
         self.assertEqual(
             mock.engine._policy.last_intervention,

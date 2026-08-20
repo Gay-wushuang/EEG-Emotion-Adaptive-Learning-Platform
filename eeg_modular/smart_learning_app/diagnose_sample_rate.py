@@ -3,9 +3,12 @@
 诊断目标：
     验证 MindWave 输出的 rawEeg 实际采样率是否符合 512 Hz 契约。
 
-诊断方法：
-    从 ThinkGear 协议的 rawEeg 包中统计每秒的样本数，
-    给出 min / max / mean / median，并分类报告。
+诊断方法（Phase 2.2 修复）：
+    1. TCP 建连后先等待第一条 rawEeg（记录 startup delay）
+    2. 从第一条 rawEeg 开始计时 duration 秒（有效采集时长）
+    3. 使用跨 TCP chunk 的 remainder buffer 进行可靠 JSON 解析
+    4. 统计 rawEeg / eSense / eegPower / poorSignal 包数
+    5. 计算有效 raw 采样率并分类报告
 
 绝对禁止：
     - 重采样
@@ -32,31 +35,39 @@ import statistics
 import sys
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 # ── 只读常量（不修改） ──
 TARGET_SAMPLE_RATE = 512
-RATE_TOLERANCE_HZ = 20   # 允许 ±20 Hz 浮动
+RATE_LOW = 450       # 450 Hz 以下判为低于 512
+RATE_HIGH = 570      # 570 Hz 以上判为高于 512
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 13854
-DEFAULT_DURATION = 30.0   # 采样秒数
+DEFAULT_DURATION = 30.0   # 有效 raw 采集秒数（不含 startup delay）
+MIN_ACTIVE_SECONDS = 10.0  # 最少有效采集时长
+STARTUP_TIMEOUT = 15.0     # 等待第一条 rawEeg 的最大秒数
 
 
 @dataclass
 class SampleRateReport:
     """采样率诊断报告（只读）。"""
-    duration_seconds: float
-    total_raw_packets: int
-    samples_per_second: List[float]       # 每秒样本数列表
-    min_rate: float
-    max_rate: float
-    mean_rate: float
-    median_rate: float
-    std_rate: float
-    below_min_seconds: float              # 每秒样本数低于阈值的总时长
-    warnings: List[str]                   # 警告消息（只读）
-    passed_threshold: bool                # 是否符合 512 ± tolerance
+    startup_delay_seconds: float            # TCP 建连到第一条 rawEeg 的等待时间
+    active_duration_seconds: float          # 有效 raw 采集时长（不含 startup delay）
+    total_raw_packets: int                  # rawEeg 总包数
+    raw_count: int                          # rawEeg 有效计数
+    active_raw_rate_hz: float               # 有效 raw 采样率
+    esense_count: int                       # eSense 包计数
+    eegpower_count: int                     # eegPower 包计数
+    poorsignal_count: int                   # poorSignal 包计数
+    samples_per_second: List[float] = field(default_factory=list)  # 每秒 rawEeg 计数
+    min_rate: float = 0.0
+    max_rate: float = 0.0
+    mean_rate: float = 0.0
+    median_rate: float = 0.0
+    std_rate: float = 0.0
+    warnings: List[str] = field(default_factory=list)
+    passed_threshold: bool = False
 
     def __str__(self) -> str:
         lines = [
@@ -64,18 +75,23 @@ class SampleRateReport:
             "  MindWave 采样率诊断报告（只读）",
             "=" * 60,
             f"  目标采样率: {TARGET_SAMPLE_RATE} Hz",
-            f"  诊断时长: {self.duration_seconds:.1f} 秒",
-            f"  总 rawEeg 包数: {self.total_raw_packets}",
-            f"  每秒样本数统计:",
-            f"    min    = {self.min_rate:.1f} Hz",
-            f"    max    = {self.max_rate:.1f} Hz",
-            f"    mean   = {self.mean_rate:.1f} Hz",
-            f"    median = {self.median_rate:.1f} Hz",
-            f"    std    = {self.std_rate:.1f} Hz",
-            f"  阈值合格: {'是' if self.passed_threshold else '否'}",
+            f"  Startup Delay: {self.startup_delay_seconds:.1f} 秒",
+            f"  有效采集时长: {self.active_duration_seconds:.1f} 秒",
+            f"  rawEeg 包数: {self.raw_count}",
+            f"  rawEeg 总包数: {self.total_raw_packets}",
+            f"  eSense 包数: {self.esense_count}",
+            f"  eegPower 包数: {self.eegpower_count}",
+            f"  poorSignal 包数: {self.poorsignal_count}",
+            f"  有效 raw 采样率: {self.active_raw_rate_hz:.1f} Hz",
         ]
-        if self.below_min_seconds > 0:
-            lines.append(f"  低于阈值时长: {self.below_min_seconds:.1f} 秒")
+        if self.samples_per_second:
+            lines.append(f"  每秒 rawEeg 计数:")
+            lines.append(f"    min    = {self.min_rate:.1f} Hz")
+            lines.append(f"    max    = {self.max_rate:.1f} Hz")
+            lines.append(f"    mean   = {self.mean_rate:.1f} Hz")
+            lines.append(f"    median = {self.median_rate:.1f} Hz")
+            lines.append(f"    std    = {self.std_rate:.1f} Hz")
+        lines.append(f"  阈值合格: {'是' if self.passed_threshold else '否'}")
         if self.warnings:
             lines.append("  警告:")
             for w in self.warnings:
@@ -85,11 +101,16 @@ class SampleRateReport:
 
 
 def classify_rate(rate: float) -> str:
-    """将采样率分类（仅报告，不改变行为）。"""
-    if 220 <= rate <= 300:
-        return f"WARNING: approximately 256 Hz (实际 {rate:.0f} Hz)"
-    elif 480 <= rate <= 540:
+    """将采样率分类（仅报告，不改变行为）。
+
+    450~570 Hz: approximately 512 Hz
+    220~300 Hz: approximately 256 Hz
+    其他: unexpected raw sample rate
+    """
+    if RATE_LOW <= rate <= RATE_HIGH:
         return f"OK: approximately 512 Hz (实际 {rate:.0f} Hz)"
+    elif 220 <= rate <= 300:
+        return f"WARNING: approximately 256 Hz (实际 {rate:.0f} Hz)"
     else:
         return f"WARNING: unexpected raw sample rate (实际 {rate:.0f} Hz)"
 
@@ -101,10 +122,16 @@ def diagnose(
 ) -> Optional[SampleRateReport]:
     """连接 ThinkGear Connector 并统计采样率（只读）。
 
+    Phase 2.2 修复：
+    - TCP 建连后先等待第一条 rawEeg，记录 startup delay
+    - duration 表示有效 raw 采集时长，不含 startup delay
+    - 使用跨 TCP chunk 的 remainder buffer 进行可靠 JSON 解析
+    - 不足 MIN_ACTIVE_SECONDS 时报告样本不足
+
     Returns:
         SampleRateReport 或 None（连接失败时返回 None）
     """
-    # 连接 ThinkGear Connector
+    # ── 连接 ThinkGear Connector ──
     try:
         sock = socket.create_connection((host, port), timeout=5.0)
     except (socket.timeout, ConnectionError, OSError) as e:
@@ -117,41 +144,102 @@ def diagnose(
     sock.sendall((request + "\r").encode("utf-8"))
     sock.settimeout(0.5)
 
-    print(f"[INFO] 已连接 ThinkGear Connector，开始诊断 {duration:.1f} 秒...")
+    print(f"[INFO] 已连接 ThinkGear Connector，等待第一条 rawEeg...")
 
-    # 统计每秒样本数
+    # ── Phase 1: 等待第一条 rawEeg（记录 startup delay）──
+    remainder = ""
+    first_raw_received = False
+    first_raw_time: Optional[float] = None
+    startup_start = time.time()
+    startup_delay = 0.0
+
+    while not first_raw_received:
+        try:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            text = text.replace("\n", "\r")
+            remainder += text
+
+            # 使用 "\r" 分割，保留最后可能不完整的一条
+            while "\r" in remainder:
+                line, remainder = remainder.split("\r", 1)
+                if not line.strip():
+                    continue
+                try:
+                    packet = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if "rawEeg" in packet:
+                    first_raw_received = True
+                    first_raw_time = time.time()
+                    startup_delay = first_raw_time - startup_start
+                    break
+        except socket.timeout:
+            pass
+
+        if time.time() - startup_start > STARTUP_TIMEOUT:
+            print(f"[ERROR] 等待第一条 rawEeg 超时 ({STARTUP_TIMEOUT:.0f} 秒)。")
+            print("请检查设备是否已连接并正常输出数据。")
+            sock.close()
+            return None
+
+    print(f"[INFO] 第一条 rawEeg 到达 (startup delay: {startup_delay:.1f}s)")
+    print(f"[INFO] 开始有效采集 {duration:.1f} 秒...")
+
+    # ── Phase 2: 有效 raw 采集 ──
     per_second_counts: deque[int] = deque()
-    current_second = int(time.time())
+    current_second = int(first_raw_time)
     current_count = 0
     total_raw = 0
-    start_time = time.time()
+    raw_count = 0
+    esense_count = 0
+    eegpower_count = 0
+    poorsignal_count = 0
+    active_start = first_raw_time
+    last_data_time = first_raw_time
 
     try:
-        while time.time() - start_time < duration:
+        while time.time() - active_start < duration:
             try:
                 chunk = sock.recv(8192)
                 if not chunk:
                     break
                 text = chunk.decode("utf-8", errors="replace")
                 text = text.replace("\n", "\r")
-                for line in text.split("\r"):
+                remainder += text
+
+                # 使用 "\r" 分割，保留最后可能不完整的一条
+                while "\r" in remainder:
+                    line, remainder = remainder.split("\r", 1)
                     if not line.strip():
                         continue
                     try:
                         packet = json.loads(line)
                     except (json.JSONDecodeError, TypeError):
                         continue
-                    if "rawEeg" not in packet:
-                        continue
-                    total_raw += 1
-                    current_count += 1
 
-                    # 若跨秒，保存当前秒计数
-                    now_sec = int(time.time())
-                    if now_sec != current_second:
-                        per_second_counts.append(current_count)
-                        current_count = 0
-                        current_second = now_sec
+                    last_data_time = time.time()
+
+                    if "rawEeg" in packet:
+                        total_raw += 1
+                        raw_count += 1
+                        current_count += 1
+
+                        # 跨秒保存
+                        now_sec = int(time.time())
+                        if now_sec != current_second:
+                            per_second_counts.append(current_count)
+                            current_count = 0
+                            current_second = now_sec
+
+                    if "eSense" in packet:
+                        esense_count += 1
+                    if "eegPower" in packet:
+                        eegpower_count += 1
+                    if "poorSignalLevel" in packet:
+                        poorsignal_count += 1
             except socket.timeout:
                 pass
     except KeyboardInterrupt:
@@ -165,48 +253,63 @@ def diagnose(
         except Exception:
             pass
 
+    active_duration = last_data_time - active_start
+
+    # ── 检查有效采集时长 ──
     if not per_second_counts:
         print("[ERROR] 未收到任何 rawEeg 数据。请检查设备连接。")
         return None
 
-    counts_list = list(per_second_counts)
+    if active_duration < MIN_ACTIVE_SECONDS:
+        print(f"[WARN] 有效采集时长仅 {active_duration:.1f}s，"
+              f"不足 {MIN_ACTIVE_SECONDS:.0f}s，采样率可能不稳定。")
+
+    # ── 统计 ──
+    counts_list = [c for c in per_second_counts if c > 0]
+    if not counts_list:
+        print("[ERROR] 所有秒的 rawEeg 计数为 0。")
+        return None
+
     mean_rate = statistics.mean(counts_list)
     median_rate = statistics.median(counts_list)
     min_rate = min(counts_list)
     max_rate = max(counts_list)
     std_rate = statistics.stdev(counts_list) if len(counts_list) > 1 else 0.0
+    active_raw_rate_hz = raw_count / active_duration if active_duration > 0 else 0.0
 
     # 分类报告
     warnings: List[str] = []
     for i, rate in enumerate(counts_list):
-        if abs(rate - TARGET_SAMPLE_RATE) > RATE_TOLERANCE_HZ:
-            warnings.append(
-                f"第 {i+1} 秒: {classify_rate(rate)}"
-            )
+        if rate < RATE_LOW or rate > RATE_HIGH:
+            warnings.append(f"第 {i+1} 秒: {classify_rate(rate)}")
 
-    passed = abs(mean_rate - TARGET_SAMPLE_RATE) <= RATE_TOLERANCE_HZ
-
-    below_min = sum(
-        1 for r in counts_list if r < TARGET_SAMPLE_RATE - RATE_TOLERANCE_HZ
-    )
+    passed = RATE_LOW <= mean_rate <= RATE_HIGH
 
     report = SampleRateReport(
-        duration_seconds=time.time() - start_time,
+        startup_delay_seconds=startup_delay,
+        active_duration_seconds=active_duration,
         total_raw_packets=total_raw,
+        raw_count=raw_count,
+        active_raw_rate_hz=active_raw_rate_hz,
+        esense_count=esense_count,
+        eegpower_count=eegpower_count,
+        poorsignal_count=poorsignal_count,
         samples_per_second=counts_list,
         min_rate=min_rate,
         max_rate=max_rate,
         mean_rate=mean_rate,
         median_rate=median_rate,
         std_rate=std_rate,
-        below_min_seconds=float(below_min),
         warnings=warnings,
         passed_threshold=passed,
     )
 
     print(str(report))
 
-    # 若不通过，给出明确的只读建议
+    # 分类输出
+    classification = classify_rate(active_raw_rate_hz)
+    print(f"\n[分类] {classification}")
+
     if not passed:
         print("\n[建议] 采样率偏离 512 Hz 契约。")
         print("  本诊断脚本不会修改任何代码或数据。")
@@ -232,7 +335,7 @@ def main():
     )
     parser.add_argument(
         "--duration", type=float, default=DEFAULT_DURATION,
-        help=f"诊断时长（秒，默认 {DEFAULT_DURATION}）",
+        help=f"有效 raw 采集时长（秒，不含 startup delay，默认 {DEFAULT_DURATION}）",
     )
     args = parser.parse_args()
 

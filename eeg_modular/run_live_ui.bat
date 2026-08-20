@@ -4,7 +4,8 @@ title EEG Learning Assistant - Live Mode
 
 rem ===== Config =====
 set PYTHON_EXE=E:\anaconda3\envs\eegcnn\python.exe
-set APP_DIR=%~dp0ui_prototype
+set "APP_DIR=%~dp0ui_prototype"
+set "PROD_PKG=%~dp0production_baseline_v1"
 set MODE=live
 
 rem ===== Check Python interpreter =====
@@ -23,21 +24,29 @@ if not exist "%APP_DIR%\main.py" (
     exit /b 1
 )
 
-rem ===== Check Production Baseline v1 =====
-set PROD_PKG=%~dp0production_baseline_v1
+rem ===== Verify Production Baseline v1 exists =====
 if not exist "%PROD_PKG%\model.pt" (
-    echo [WARN] Production Baseline v1 not found at: %PROD_PKG%
-    echo Live mode requires the production package.
-    echo The app will auto-fallback to Mock mode if the package is missing.
+    echo ============================================================
+    echo   [FATAL] Production Baseline v1 package not found
+    echo   Expected: %PROD_PKG%\model.pt
+    echo   Live mode requires the frozen production package.
+    echo   The application will NOT auto-fallback to Mock mode.
+    echo   Please ensure production_baseline_v1/ is present.
+    echo ============================================================
     echo.
+    pause
+    exit /b 1
 )
 
-rem ===== Switch to UI dir and launch =====
+rem ===== All checks passed, launch Live mode =====
 cd /d "%APP_DIR%"
-echo Launching EEG Learning Assistant UI - Live Mode...
-echo Python: %PYTHON_EXE%
-echo Entry:  %APP_DIR%\main.py
-echo Mode:    %MODE%
+echo ============================================================
+echo   Launching EEG Learning Assistant - Live Mode
+echo   Python: %PYTHON_EXE%
+echo   Entry:  %APP_DIR%\main.py
+echo   Mode:   %MODE%
+echo   Package: %PROD_PKG%
+echo ============================================================
 echo.
 
 "%PYTHON_EXE%" main.py --mode %MODE%

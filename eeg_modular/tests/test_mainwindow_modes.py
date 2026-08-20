@@ -166,7 +166,10 @@ class TestMainWindowModes(unittest.TestCase):
             )
 
     def test_A5_live_fallback_when_package_missing(self):
-        """Live 模式在 production 包不存在时回退到 Mock。"""
+        """Live 模式在 production 包不存在时回退到 Mock，且 _mode 改为 mock。
+
+        绝不允许在 Mock service 上显示 Live 标签。
+        """
         from main_window import MainWindow
 
         with patch(
@@ -184,10 +187,31 @@ class TestMainWindowModes(unittest.TestCase):
                     window.service, MockDataService,
                     "包不存在时应回退到 MockDataService"
                 )
+                # _mode 必须改为 mock，不能保留 live
+                self.assertEqual(
+                    window._mode, "mock",
+                    "回退后 _mode 必须改为 mock，不能保留 live"
+                )
                 # state 应记录回退原因
                 self.assertTrue(
                     hasattr(window.state, '_live_fallback_reason'),
                     "state 应记录回退原因"
+                )
+                # state.quality_level 应为 rejected
+                self.assertEqual(
+                    window.state.quality_level, "rejected",
+                    "回退后 quality_level 应为 rejected"
+                )
+                # 侧边栏版本标签不应出现 "Live"
+                sidebar = self._find_sidebar(window, self.QWidget)
+                sidebar_text = self._find_version_label(sidebar, self.QLabel)
+                self.assertNotIn(
+                    "Live", sidebar_text,
+                    f"回退后侧边栏不应显示 Live，实际: '{sidebar_text}'"
+                )
+                self.assertIn(
+                    "Mock", sidebar_text,
+                    f"回退后侧边栏应显示 Mock，实际: '{sidebar_text}'"
                 )
             finally:
                 window.service.stop_streaming()
@@ -398,6 +422,228 @@ class TestMainWindowModes(unittest.TestCase):
                 window.service.stop_streaming()
                 window.close()
                 window.deleteLater()
+
+    def test_A11_live_status_bar_no_mock_text(self):
+        """Live 模式状态栏不应出现 Mock 字样。"""
+        from main_window import MainWindow
+
+        with patch(
+            'smart_learning_app.live_service.ThinkGearLiveWorker',
+        ), patch(
+            'smart_learning_app.live_service.ProductionInferenceWorker',
+        ):
+            window = MainWindow(mode="live")
+            try:
+                # 模拟真实 Live 状态
+                s = window.state
+                s.mode = "live"
+                s.connector_status = "online"
+                s.device_status = "online"
+                s.quality_level = "trusted"
+                s.warmup_progress = 1.0
+
+                # 触发状态栏更新
+                s.emit_update()
+
+                # 检查状态栏模式标签
+                mode_label = window._sb_mode.text()
+                self.assertNotIn(
+                    "Mock", mode_label,
+                    f"Live 状态栏不应包含 Mock，实际: '{mode_label}'"
+                )
+                self.assertIn(
+                    "Live", mode_label,
+                    f"Live 状态栏应包含 Live，实际: '{mode_label}'"
+                )
+            finally:
+                window.service.stop_streaming()
+                window.close()
+                window.deleteLater()
+
+    def test_A12_mock_status_bar_has_mock_text(self):
+        """Mock 模式状态栏应明确标识 Mock。"""
+        from main_window import MainWindow
+
+        window = MainWindow(mode="mock")
+        try:
+            s = window.state
+            s.mode = "mock"
+            s.connector_status = "offline"
+            s.device_status = "offline"
+            s.quality_level = "rejected"
+
+            s.emit_update()
+
+            mode_label = window._sb_mode.text()
+            self.assertIn(
+                "Mock", mode_label,
+                f"Mock 状态栏应包含 Mock，实际: '{mode_label}'"
+            )
+        finally:
+            window.service.stop_streaming()
+            window.close()
+            window.deleteLater()
+
+
+class TestDiagnoseSampleRate(unittest.TestCase):
+    """诊断脚本逻辑测试（不连接真实设备）。"""
+
+    def test_B1_classify_rate_512Hz_band(self):
+        """450-570 Hz 区间应分类为 approximately 512 Hz。"""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'smart_learning_app'))
+        from diagnose_sample_rate import classify_rate
+
+        for rate in [450, 480, 512, 540, 570]:
+            result = classify_rate(rate)
+            self.assertIn(
+                "512 Hz", result,
+                f"{rate} Hz 应分类为 512 Hz，实际: {result}"
+            )
+            self.assertIn("OK", result,
+                          f"{rate} Hz 应为 OK，实际: {result}")
+
+    def test_B2_classify_rate_256Hz_band(self):
+        """220-300 Hz 区间应分类为 approximately 256 Hz。"""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'smart_learning_app'))
+        from diagnose_sample_rate import classify_rate
+
+        for rate in [220, 256, 300]:
+            result = classify_rate(rate)
+            self.assertIn(
+                "256 Hz", result,
+                f"{rate} Hz 应分类为 256 Hz，实际: {result}"
+            )
+            self.assertIn("WARNING", result,
+                          f"{rate} Hz 应为 WARNING，实际: {result}")
+
+    def test_B3_classify_rate_unexpected(self):
+        """偏离区间应分类为 unexpected。"""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'smart_learning_app'))
+        from diagnose_sample_rate import classify_rate
+
+        for rate in [100, 400, 600, 800]:
+            result = classify_rate(rate)
+            self.assertIn(
+                "unexpected", result,
+                f"{rate} Hz 应分类为 unexpected，实际: {result}"
+            )
+
+    def test_B4_classify_rate_boundary(self):
+        """边界值测试。"""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'smart_learning_app'))
+        from diagnose_sample_rate import classify_rate
+
+        # 恰好在边界上
+        self.assertIn("512", classify_rate(450))
+        self.assertIn("512", classify_rate(570))
+        self.assertIn("256", classify_rate(220))
+        self.assertIn("256", classify_rate(300))
+
+        # 边界外
+        self.assertIn("unexpected", classify_rate(449))
+        self.assertIn("unexpected", classify_rate(571))
+        self.assertIn("unexpected", classify_rate(219))
+        self.assertIn("unexpected", classify_rate(301))
+
+    def test_B5_tcp_cross_chunk_parsing(self):
+        """跨 TCP chunk 的 JSON 解析不会丢 rawEeg。
+
+        模拟 rawEeg 数据被切割到两个 TCP recv 中，
+        使用 remainder buffer 应能正确拼合。
+        """
+        import sys, os, json
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'smart_learning_app'))
+
+        # 模拟 diagnose 中的 remainder buffer 逻辑
+        # 两条完整 JSON 包，每条以 \r 结尾
+        packet1 = json.dumps({"rawEeg": 100, "poorSignalLevel": 0}) + "\r"
+        packet2 = json.dumps({"rawEeg": 200, "poorSignalLevel": 1}) + "\r"
+
+        # 构造两个 chunk：
+        # chunk1 包含 packet1 + "\r" + packet2 的前半部分
+        # chunk2 包含 packet2 的后半部分
+        split_point = len(packet1) + len(packet2) // 2
+        chunk1 = packet1 + packet2[:len(packet1) + len(packet2) // 2 - len(packet1)]
+        # 重新计算：chunk1 = packet1 + packet2_prefix
+        p2_prefix_len = max(1, len(packet2) // 2)
+        chunk1 = packet1 + packet2[:p2_prefix_len]
+        chunk2 = packet2[p2_prefix_len:]
+
+        # 模拟解析（与 diagnose.diagnose() 中完全相同的逻辑）
+        remainder = ""
+        parsed_raw_eeg = []
+
+        remainder += chunk1
+        while "\r" in remainder:
+            line, remainder = remainder.split("\r", 1)
+            if not line.strip():
+                continue
+            try:
+                packet = json.loads(line)
+                if "rawEeg" in packet:
+                    parsed_raw_eeg.append(packet["rawEeg"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # chunk2 到达，补全剩余的 packet2
+        remainder += chunk2
+        while "\r" in remainder:
+            line, remainder = remainder.split("\r", 1)
+            if not line.strip():
+                continue
+            try:
+                packet = json.loads(line)
+                if "rawEeg" in packet:
+                    parsed_raw_eeg.append(packet["rawEeg"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # 两条 rawEeg 都应该被解析到
+        self.assertEqual(len(parsed_raw_eeg), 2,
+                         f"跨 chunk 解析应不丢数据，实际: {parsed_raw_eeg}")
+        self.assertIn(100, parsed_raw_eeg)
+        self.assertIn(200, parsed_raw_eeg)
+
+    def test_B6_sample_rate_report_fields(self):
+        """SampleRateReport 应包含所有必需字段。"""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'smart_learning_app'))
+        from diagnose_sample_rate import SampleRateReport
+
+        report = SampleRateReport(
+            startup_delay_seconds=7.2,
+            active_duration_seconds=30.0,
+            total_raw_packets=15360,
+            raw_count=15360,
+            active_raw_rate_hz=512.0,
+            esense_count=150,
+            eegpower_count=300,
+            poorsignal_count=30,
+            samples_per_second=[512, 511, 513],
+            min_rate=510.0,
+            max_rate=514.0,
+            mean_rate=512.0,
+            median_rate=512.0,
+            std_rate=1.0,
+            warnings=[],
+            passed_threshold=True,
+        )
+
+        text = str(report)
+        self.assertIn("7.2", text)
+        self.assertIn("30.0", text)
+        self.assertIn("15360", text)
+        self.assertIn("512.0 Hz", text)
+        self.assertIn("是", text)
+        # 检查 startup delay 和 active duration 字段
+        self.assertIn("Startup Delay", text)
+        self.assertIn("有效采集时长", text)
+        self.assertIn("poorSignal", text)
+        self.assertIn("eSense", text)
 
 
 if __name__ == "__main__":

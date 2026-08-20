@@ -138,7 +138,8 @@ class MainWindow(QMainWindow):
         """初始化 Live 服务：加载 Production Baseline v1 包并启动。
 
         若 package_dir 为 None，使用默认路径 eeg_modular/production_baseline_v1。
-        若包不存在，回退到 Mock 模式并在状态栏提示。
+        若包不存在，明确回退到 Mock 模式并将 _mode 改为 "mock"，
+        绝不允许在 Mock service 上显示 Live 标签。
         """
         if package_dir is None:
             package_dir = _PRODUCTION_PACKAGE_DIR
@@ -147,14 +148,17 @@ class MainWindow(QMainWindow):
 
         # 检查生产包是否存在
         if not package_dir.exists():
-            import warnings
-            warnings.warn(
-                f"Production Baseline v1 包未找到: {package_dir}，"
-                f"回退到 Mock 模式。"
-            )
+            # 明确切换到 Mock 模式，防止侧边栏/状态栏误标 Live
+            self._mode = "mock"
+            self.state._live_fallback_reason = str(package_dir)
+            self.state.quality_level = "rejected"
+            self.state.quality_reasons = [
+                f"Live 启动失败：Production Baseline v1 包未找到 ({package_dir})，"
+                f"当前运行在 Mock 模式。"
+            ]
+            self.state.emit_update()
             self.service = MockDataService(self.state)
             self.service.start_streaming()
-            self.state._live_fallback_reason = str(package_dir)
             return
 
         # 延迟导入 LiveDataService（避免 Mock 模式不必要的依赖）
@@ -333,14 +337,17 @@ class MainWindow(QMainWindow):
         else:
             self._sb_session.setText("会话: 未开始")
 
-        # ── 模式：live | replay（mock 模式由采集线程报告为 "mock"）──
+        # ── 模式：live | replay | mock ──
         mode = s.mode
         if mode == "live":
-            self._sb_mode.setText(f"模式: 实时演示 · Mock {MOCK_UI_REFRESH_HZ}Hz刷新")
-            self._sb_mode.setStyleSheet("color: #FBBF24; font-size: 12px;")
+            self._sb_mode.setText("模式: Live · 真实EEG")
+            self._sb_mode.setStyleSheet("color: #4ADE80; font-size: 12px;")
         elif mode == "replay":
             self._sb_mode.setText("模式: 回放")
             self._sb_mode.setStyleSheet("color: #60A5FA; font-size: 12px;")
+        elif mode == "mock":
+            self._sb_mode.setText(f"模式: Mock · 演示数据 {MOCK_UI_REFRESH_HZ}Hz")
+            self._sb_mode.setStyleSheet("color: #FBBF24; font-size: 12px;")
         else:
             self._sb_mode.setText(f"模式: {mode}")
             self._sb_mode.setStyleSheet("color: #6B7689; font-size: 12px;")
