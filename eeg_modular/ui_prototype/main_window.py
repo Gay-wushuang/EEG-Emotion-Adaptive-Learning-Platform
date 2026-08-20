@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
 
         # 右侧主区域
         right_area = QWidget()
+        right_area.setObjectName("RightArea")
         right_layout = QVBoxLayout(right_area)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)

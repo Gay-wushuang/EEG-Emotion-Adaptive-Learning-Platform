@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QScrollArea,
 )
+
+
+# 统一页面背景色（与 theme.qss 中 RootWidget 保持一致）
+_PAGE_BG = "#111722"
 
 
 class BasePage(QWidget):
@@ -27,6 +32,13 @@ class BasePage(QWidget):
         scrollable: bool = False,
     ):
         super().__init__(parent)
+
+        # 确保 BasePage 自身使用深色背景
+        self.setAutoFillBackground(True)
+        pal = self.palette()
+        pal.setColor(QPalette.Window, QColor(_PAGE_BG))
+        self.setPalette(pal)
+
         self._main_layout = QVBoxLayout(self)
         self._main_layout.setContentsMargins(24, 20, 24, 20)
         self._main_layout.setSpacing(16)
@@ -58,10 +70,18 @@ class BasePage(QWidget):
             self._scroll_area = QScrollArea()
             self._scroll_area.setWidgetResizable(True)
             self._scroll_area.setFrameShape(QFrame.NoFrame)
+            # 滚动区域背景：防止 viewport 默认显示白色
             self._scroll_area.setStyleSheet(
-                "QScrollArea { border: none; background: transparent; }"
+                f"QScrollArea {{ border: none; background: {_PAGE_BG}; }}"
+                f"QScrollArea > QWidget > QWidget {{ background: {_PAGE_BG}; }}"
             )
             self._content = QWidget()
+            # 内容容器背景色
+            self._content.setAutoFillBackground(True)
+            pal_c = self._content.palette()
+            pal_c.setColor(QPalette.Window, QColor(_PAGE_BG))
+            self._content.setPalette(pal_c)
+
             self._content_layout = QVBoxLayout(self._content)
             self._content_layout.setContentsMargins(0, 0, 0, 0)
             self._content_layout.setSpacing(14)
@@ -69,6 +89,12 @@ class BasePage(QWidget):
             self._main_layout.addWidget(self._scroll_area, 1)
         else:
             self._content = QWidget()
+            # 非滚动模式同样设置深色背景
+            self._content.setAutoFillBackground(True)
+            pal_c = self._content.palette()
+            pal_c.setColor(QPalette.Window, QColor(_PAGE_BG))
+            self._content.setPalette(pal_c)
+
             self._content_layout = QVBoxLayout(self._content)
             self._content_layout.setContentsMargins(0, 0, 0, 0)
             self._content_layout.setSpacing(14)

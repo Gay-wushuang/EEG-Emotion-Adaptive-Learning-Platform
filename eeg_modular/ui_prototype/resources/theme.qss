@@ -13,6 +13,22 @@ QMainWindow, QWidget#RootWidget {
     background-color: #111722;
 }
 
+QWidget#RightArea {
+    background-color: #111722;
+}
+
+QStackedWidget {
+    background-color: #111722;
+}
+
+/* QScrollArea viewport 深色背景，防止 Windows 默认白色 */
+QScrollArea {
+    background-color: #111722;
+}
+QScrollArea > QWidget > QWidget {
+    background-color: #111722;
+}
+
 QWidget {
     color: #E7ECF3;
     font-size: 14px;
