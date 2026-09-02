@@ -3,23 +3,38 @@ setlocal
 chcp 65001 >nul
 title EEG Learning Assistant - Environment Setup
 cd /d "%~dp0"
-where py >nul 2>nul
-if errorlevel 1 (
-    echo [ERROR] Python Launcher was not found.
-    echo Install 64-bit Python 3.10 from python.org and enable the Python Launcher.
+
+set "BASE_PYTHON="
+
+rem Prefer an activated Conda environment when it really is Python 3.10.
+if defined CONDA_PREFIX if exist "%CONDA_PREFIX%\python.exe" (
+    "%CONDA_PREFIX%\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 10) else 1)" >nul 2>nul
+    if not errorlevel 1 set BASE_PYTHON="%CONDA_PREFIX%\python.exe"
+)
+
+rem Otherwise use the standard Windows Python Launcher.
+if not defined BASE_PYTHON (
+    where py >nul 2>nul
+    if not errorlevel 1 (
+        py -3.10 -c "import sys" >nul 2>nul
+        if not errorlevel 1 set "BASE_PYTHON=py -3.10"
+    )
+)
+
+if not defined BASE_PYTHON (
+    echo [ERROR] No complete Python 3.10 environment was found.
+    echo Activate a Python 3.10 Conda environment, or install Python 3.10
+    echo with the Windows Python Launcher, then run this file again.
     echo Do not copy a standalone python.exe into this directory.
     pause
     exit /b 1
 )
-py -3.10 -c "import sys; print(sys.version)" >nul 2>nul
-if errorlevel 1 (
-    echo [ERROR] Python 3.10 was not found. Install it and run this file again.
-    pause
-    exit /b 1
-)
+
+echo Using base Python: %BASE_PYTHON%
+if defined EEG_SETUP_DETECT_ONLY exit /b 0
 if not exist ".venv\pyvenv.cfg" (
     echo Creating local virtual environment...
-    py -3.10 -m venv .venv
+    %BASE_PYTHON% -m venv .venv
     if errorlevel 1 goto :failed
 )
 echo Installing project dependencies. This can take several minutes...
