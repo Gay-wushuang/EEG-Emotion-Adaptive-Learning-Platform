@@ -133,6 +133,17 @@ eeg_modular/
 
 ## 🚀 快速开始
 
+### 在另一台 Windows 电脑运行桌面应用
+
+仓库不包含、也不能通过复制单个 `python.exe` 来分发 Python 环境。首次运行请：
+
+1. 安装 64 位 Python 3.10，并勾选 Python Launcher；
+2. 双击 `setup_env.bat`，创建本机专用的 `.venv` 并安装依赖；
+3. 演示模式双击 `run_ui.bat`；
+4. 真实 MindWave 模式先启动 ThinkGear Connector，再双击 `run_live_ui.bat`。
+
+启动器只接受完整的 `.venv`、当前 Conda 环境或显式设置的 `EEG_PYTHON`，不会使用项目目录下缺少 `pyvenv.cfg` 的孤立 `python.exe`。
+
 ### 环境要求
 
 - Python 3.8+
