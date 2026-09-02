@@ -40,7 +40,11 @@ if not exist ".venv\pyvenv.cfg" (
 echo Installing project dependencies. This can take several minutes...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
 if errorlevel 1 goto :failed
-".venv\Scripts\python.exe" -m pip install -r requirements.txt -r requirements-ui.lock
+rem Remove training-only packages that may pin an incompatible Torch version.
+".venv\Scripts\python.exe" -m pip uninstall -y torchvision torchaudio >nul 2>nul
+".venv\Scripts\python.exe" -m pip install --upgrade -r requirements-app.lock
+if errorlevel 1 goto :failed
+".venv\Scripts\python.exe" -c "import torch, numpy, scipy, sklearn, joblib, PySide6, pyqtgraph; print('Runtime self-check passed. torch=' + torch.__version__)"
 if errorlevel 1 goto :failed
 echo.
 echo Environment is ready: %CD%\.venv

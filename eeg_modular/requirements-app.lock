@@ -1,0 +1,10 @@
+# Reproducible runtime for the Windows desktop application (Python 3.10).
+# Training-only packages are intentionally excluded.
+torch==2.5.1
+numpy==2.2.6
+scipy==1.15.3
+scikit-learn==1.7.2
+joblib==1.5.3
+PySide6==6.8.3
+pyqtgraph==0.14.0
+reportlab==4.4.10

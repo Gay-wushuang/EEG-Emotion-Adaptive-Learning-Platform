@@ -138,7 +138,7 @@ eeg_modular/
 仓库不包含、也不能通过复制单个 `python.exe` 来分发 Python 环境。首次运行请：
 
 1. 安装 64 位 Python 3.10，并勾选 Python Launcher；
-2. 双击 `setup_env.bat`，创建本机专用的 `.venv` 并安装依赖；
+2. 双击 `setup_env.bat`，创建本机专用的 `.venv` 并按 `requirements-app.lock` 安装冻结的运行依赖；
 3. 演示模式双击 `run_ui.bat`；
 4. 真实 MindWave 模式先启动 ThinkGear Connector，再双击 `run_live_ui.bat`。
 
