@@ -82,7 +82,9 @@ outputs_v*/
 splits_v*/
 quality_reference_v*/
 outputs/
-features/
+/features/
+!eeg_modular/eeg_emotion/features/
+!eeg_modular/eeg_emotion/features/**
 
 # Session data / generated reports
 reports/generated/
