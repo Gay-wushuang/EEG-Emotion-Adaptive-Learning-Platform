@@ -32,7 +32,7 @@ class WelcomePage(BasePage):
         welcome_card = Card("系统简介")
         intro = QLabel(
             "智学脑机助手通过 MindWave 单通道脑电设备，持续观察学习过程中的状态变化。\n"
-            "系统融合 EEG 时域与频域特征，输出积极、中性、负性三类状态概率，并独立评估信号可信度，\n"
+            "系统融合脑电时域与频域特征，输出积极、中性、负性三类状态概率，并独立评估信号可信度，\n"
             "为学习节奏调整、专注趋势观察和阶段复盘提供辅助信息。\n\n"
             "请先启动 ThinkGear Connector 并正确佩戴设备；只有信号质量合格后，系统才会提供状态解释。"
         )
@@ -85,7 +85,7 @@ class WelcomePage(BasePage):
         info_sample = QLabel(
             f"设备目标采样率：{DEVICE_TARGET_SAMPLE_HZ}Hz\n"
             "实时数据：当前未接入\n"
-            "支持数据：Raw EEG / Attention / Meditation"
+            "支持数据：原始脑电 / 专注度 / 放松度"
         )
         info_sample.setStyleSheet("color: #6B7689; font-size: 12px;")
         info_sample.setWordWrap(True)

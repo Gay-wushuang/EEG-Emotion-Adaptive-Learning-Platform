@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -46,6 +47,11 @@ class MockDataService(QObject):
     def __init__(self, state: DashboardState, parent: Optional[QObject] = None):
         super().__init__(parent)
         self.state = state
+        self.sessions_dir = Path(__file__).resolve().parents[2] / "data" / "sessions"
+        self.state.mode = "mock"
+        # Persisted synthetic sessions are indexed only in Mock mode.  They
+        # remain physically separated from formal Live history.
+        self.state.configure_session_store(self.sessions_dir, include_demo=True)
 
         # 后台线程
         self.acq_config = AcquisitionConfig(mode="mock")
@@ -85,17 +91,20 @@ class MockDataService(QObject):
 
     def stop_streaming(self):
         """停止数据流。"""
+        if self._session_running:
+            self.end_session(status="interrupted")
         self._warmup_running = False
         self._tick_timer.stop()
         self.acq_worker.stop()
         self.inf_worker.stop()
 
     def start_session(self):
-        self.state._session_active = True
         self.state.session_seconds = 0.0
+        metadata_path = self.state.begin_session(source="mock", demo=True)
         self._session_running = True
         if not self._tick_timer.isActive():
             self._tick_timer.start()
+        return metadata_path
 
     def pause_session(self):
         self.state._session_active = False
@@ -105,10 +114,15 @@ class MockDataService(QObject):
         self.state._session_active = True
         self._session_running = True
 
-    def end_session(self):
-        self.state._session_active = False
+    def end_session(self, status: str = "completed"):
         self._session_running = False
         self._warmup_running = False
+        metadata_path = self.state.finalize_session(status=status)
+        if metadata_path is None and self.state.last_session_save_error:
+            self.state.feedback_text = (
+                "会话记录保存失败，请检查 data/sessions 文件夹写入权限。"
+            )
+        return metadata_path
 
     # ── 信号回调（主线程执行）──
 
@@ -146,6 +160,13 @@ class MockDataService(QObject):
             quality_level, quality_reasons = "rejected", ["设备未连接"]
         s.quality_level = quality_level
         s.quality_reasons = quality_reasons
+        if s.pipeline_state != "error":
+            if quality_level == "rejected":
+                s.pipeline_state = "rejected"
+            elif not s.warmup_complete:
+                s.pipeline_state = "warming_up"
+            else:
+                s.pipeline_state = "ready"
 
         # 将模拟情绪趋势传给推理线程
         if hasattr(self.acq_worker, '_sim_state'):
@@ -165,6 +186,8 @@ class MockDataService(QObject):
             s.meditation = None
             s.quality_level = "rejected"
             s.quality_reasons = ["设备未连接"]
+            if s.pipeline_state != "error":
+                s.pipeline_state = "rejected"
 
     def _on_inference(self, result: dict):
         """推理线程推送推理结果。"""
@@ -185,6 +208,10 @@ class MockDataService(QObject):
             s.prob_negative = None
             s.predicted_state = None
             s.confidence = None
+        if s.pipeline_state != "error":
+            s.pipeline_state = (
+                "ready" if s.inference_eligible else "rejected"
+            )
 
         # 概率历史（用于图表绘制）
         s._prob_history.append((time.time(), probs[0], probs[1], probs[2]))
@@ -226,6 +253,9 @@ class MockDataService(QObject):
             )
             s.quality_level = quality_level
             s.quality_reasons = quality_reasons
+
+        if self._session_running:
+            s.capture_session_snapshot()
 
         s.emit_update()
 

@@ -14,6 +14,7 @@ DashboardState 正式字段接口。UI 业务逻辑只消费正式字段，
 from __future__ import annotations
 
 import time
+import inspect
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
@@ -45,13 +46,23 @@ _DIFFICULTY_INDEX = {
 _INDEX_DIFFICULTY = {v: k for k, v in _DIFFICULTY_INDEX.items()}
 
 QUICK_EVENTS = [
-    ("开始专注", "user", "#4ADE80"),
-    ("走神", "user", "#FBBF24"),
-    ("感到困难", "user", "#F87171"),
-    ("短暂休息", "user", "#4FC3F7"),
-    ("情绪波动", "user", "#FBBF24"),
-    ("任务切换", "user", "#94A3B8"),
+    ("开始专注", "self_report", "#4ADE80"),
+    ("走神", "self_report", "#FBBF24"),
+    ("感到困难", "self_report", "#F87171"),
+    ("短暂休息", "manual", "#4FC3F7"),
+    ("情绪波动", "self_report", "#FBBF24"),
+    ("任务切换", "manual", "#94A3B8"),
 ]
+
+EVENT_SOURCE_DISPLAY = {
+    "user": "人工标记",
+    "manual": "人工标记",
+    "self_report": "主观反馈",
+    "system": "系统记录",
+    "inference": "模型检测",
+    "intervention": "自适应动作",
+    "adaptive": "自适应动作",
+}
 
 
 class TaskPage(BasePage):
@@ -60,6 +71,8 @@ class TaskPage(BasePage):
         self.service = service
         self._task_start = 0.0
         self._task_active = False
+        self._event_scopes = {}
+        self._event_buttons = []
         # 防止程序同步 ComboBox 时回流触发用户回调
         self._syncing_combo = False
         super().__init__(
@@ -69,8 +82,29 @@ class TaskPage(BasePage):
         self._build_ui()
         # 初始同步一次：state -> ComboBox
         self._sync_combos_from_state()
+        self.set_role(self._role)
 
     def _build_ui(self):
+        hierarchy_card = Card("记录层级")
+        hierarchy_row = QHBoxLayout()
+        hierarchy_row.setSpacing(12)
+        relation = QLabel(
+            "监测会话 = 一次连续学习记录；任务 = 会话中的学习活动；事件 = 会话或任务内的时间标记。"
+        )
+        relation.setWordWrap(True)
+        relation.setStyleSheet("color: #AAB6C8; font-size: 12px;")
+        hierarchy_row.addWidget(relation, 1)
+        self._session_relation = QLabel("监测会话：未开始")
+        self._session_relation.setObjectName("WarnLabel")
+        hierarchy_row.addWidget(self._session_relation)
+        self._btn_start_session = QPushButton("开始监测会话")
+        self._btn_start_session.setObjectName("PrimaryButton")
+        self._btn_start_session.clicked.connect(self._on_start_session)
+        hierarchy_row.addWidget(self._btn_start_session)
+        hierarchy_card.add_widget(self._wrap(hierarchy_row))
+        hierarchy_card.setMaximumHeight(76)
+        self.content_layout.addWidget(hierarchy_card)
+
         splitter = QSplitter(Qt.Horizontal)
 
         # ── 左侧：任务管理 ──
@@ -141,6 +175,22 @@ class TaskPage(BasePage):
         ai_card.add_widget(self._wrap(ai_form))
         left_layout.addWidget(ai_card)
 
+        self._teacher_card = Card("教学端 · 班级过程")
+        teacher_grid = QGridLayout()
+        teacher_grid.setSpacing(6)
+        self._teacher_trend = QLabel("班级状态趋势：暂无班级汇总")
+        self._teacher_alert = QLabel("异常提醒：暂无")
+        self._teacher_process = QLabel("过程记录：0 条")
+        for row, label in enumerate(
+            (self._teacher_trend, self._teacher_alert, self._teacher_process)
+        ):
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #C5CDD9; font-size: 12px;")
+            teacher_grid.addWidget(label, row, 0)
+        self._teacher_card.add_widget(self._wrap(teacher_grid))
+        self._teacher_card.setVisible(False)
+        left_layout.addWidget(self._teacher_card)
+
         # 任务计时
         timer_card = Card("任务计时")
         timer_layout = QVBoxLayout()
@@ -181,11 +231,11 @@ class TaskPage(BasePage):
         self._state_label.setObjectName("CardValueSmall")
         state_layout.addWidget(self._state_label, 0, 0, 1, 2)
 
-        self._state_att = QLabel("Attention: --")
+        self._state_att = QLabel("专注度：--")
         self._state_att.setStyleSheet("color: #4FC3F7; font-size: 13px;")
         state_layout.addWidget(self._state_att, 1, 0)
 
-        self._state_med = QLabel("Meditation: --")
+        self._state_med = QLabel("放松度：--")
         self._state_med.setStyleSheet("color: #4ADE80; font-size: 13px;")
         state_layout.addWidget(self._state_med, 1, 1)
 
@@ -203,12 +253,22 @@ class TaskPage(BasePage):
 
         # 快速事件标记
         event_card = Card("快速事件标记")
+        event_help = QLabel(
+            "事件用于在报告中定位关键时刻。主观感受与人工操作会标明来源，并关联当前会话 / 任务。"
+        )
+        event_help.setWordWrap(True)
+        event_help.setStyleSheet("color: #8491A5; font-size: 12px;")
+        event_card.add_widget(event_help)
         event_grid = QGridLayout()
         event_grid.setSpacing(8)
         for i, (label, cat, color) in enumerate(QUICK_EVENTS):
             btn = QPushButton(label)
             btn.setObjectName("EventButton")
-            btn.clicked.connect(lambda checked, l=label: self._add_quick_event(l))
+            btn.clicked.connect(
+                lambda checked, l=label, c=cat: self._add_quick_event(l, c)
+            )
+            btn.setEnabled(getattr(self.state, "_session_active", False))
+            self._event_buttons.append(btn)
             event_grid.addWidget(btn, i // 3, i % 3)
 
         event_card.add_widget(self._wrap(event_grid))
@@ -221,6 +281,8 @@ class TaskPage(BasePage):
 
         btn_custom = QPushButton("标记")
         btn_custom.clicked.connect(self._add_custom_event)
+        btn_custom.setEnabled(getattr(self.state, "_session_active", False))
+        self._event_buttons.append(btn_custom)
         custom_row.addWidget(btn_custom)
         event_card.add_widget(self._wrap(custom_row))
 
@@ -231,20 +293,28 @@ class TaskPage(BasePage):
         timeline_layout = QVBoxLayout()
 
         self._event_table = QTableWidget()
-        self._event_table.setColumnCount(4)
-        self._event_table.setHorizontalHeaderLabels(["时间", "类别", "事件", "备注"])
+        self._event_table.setColumnCount(5)
+        self._event_table.setHorizontalHeaderLabels(["时间", "来源", "所属", "事件", "备注"])
         self._event_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._event_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self._event_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._event_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self._event_table.setAlternatingRowColors(True)
         self._event_table.verticalHeader().setVisible(False)
         self._event_table.setEditTriggers(QTableWidget.NoEditTriggers)
         timeline_layout.addWidget(self._event_table)
 
         # 清除按钮
-        btn_clear = QPushButton("清空事件")
-        btn_clear.clicked.connect(self._clear_events)
-        timeline_layout.addWidget(btn_clear, 0, Qt.AlignRight)
+        clear_row = QHBoxLayout()
+        clear_hint = QLabel("仅删除人工标记和主观反馈；系统、模型及自适应审计记录保留。")
+        clear_hint.setStyleSheet("color: #8491A5; font-size: 11px;")
+        clear_hint.setWordWrap(True)
+        clear_row.addWidget(clear_hint, 1)
+        self._btn_clear = QPushButton("删除人工事件")
+        self._btn_clear.setObjectName("DangerButton")
+        self._btn_clear.clicked.connect(self._clear_events)
+        clear_row.addWidget(self._btn_clear)
+        timeline_layout.addLayout(clear_row)
 
         timeline_card.add_widget(self._wrap(timeline_layout))
         right_layout.addWidget(timeline_card, 1)
@@ -264,13 +334,37 @@ class TaskPage(BasePage):
         w.setLayout(layout)
         return w
 
-    def _on_task_start(self):
-        if not self.state._session_active:
-            QMessageBox.information(
-                self, "请先开始学习记录",
-                "任务标记必须关联到一次学习记录。请先在“实时仪表盘”点击“开始学习记录”。"
-            )
+    def set_role(self, role: str):
+        super().set_role(role)
+        if hasattr(self, "_teacher_card"):
+            self._teacher_card.setVisible(self._role == "teacher")
+
+    def _on_start_session(self):
+        """从任务页显式建立监测会话，解除隐含跨页前置条件。"""
+        if getattr(self.state, "_session_active", False):
             return
+        self.state.reset_session()
+        event_count = len(getattr(self.state, "_events", []))
+        self.service.start_session()
+        if len(getattr(self.state, "_events", [])) == event_count:
+            self.state.add_event("会话开始", "system")
+        self._session_relation.setText("监测会话：进行中")
+        self._session_relation.setObjectName("GoodLabel")
+        self._session_relation.setStyleSheet("color: #4ADE80; font-size: 12px;")
+        self._btn_start_session.setEnabled(False)
+
+    def _on_task_start(self):
+        if not getattr(self.state, "_session_active", False):
+            answer = QMessageBox.question(
+                self,
+                "需要监测会话",
+                "任务必须关联到一次监测会话。是否现在开始监测会话并继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            self._on_start_session()
         self._task_start = time.time()
         self._task_active = True
         self.state.task_running = True
@@ -279,7 +373,15 @@ class TaskPage(BasePage):
         self._task_status.setText("进行中")
         self._task_status.setStyleSheet("color: #4ADE80; font-size: 14px;")
         task_name = self._combo_task.currentText()
-        self.state.add_event(f"开始任务: {task_name}", "system", self._input_note.text())
+        if hasattr(self.state, "begin_task"):
+            self.state.begin_task(
+                task_name, getattr(self.state, "task_difficulty", DIFFICULTY_MEDIUM),
+                self._input_note.text(),
+            )
+        else:
+            self._record_event(
+                f"开始任务：{task_name}", "system", self._input_note.text(), scope="task"
+            )
 
     def _on_task_stop(self):
         self._task_active = False
@@ -288,7 +390,10 @@ class TaskPage(BasePage):
         self._btn_task_stop.setEnabled(False)
         self._task_status.setText("已结束")
         self._task_status.setStyleSheet("color: #6B7689; font-size: 14px;")
-        self.state.add_event("结束任务", "system")
+        if hasattr(self.state, "end_task"):
+            self.state.end_task()
+        else:
+            self._record_event("结束任务", "system", scope="task")
 
     # ── 用户改动 ComboBox → 写回 DashboardState ──
     # 这是 UI 与 state 保持单一真相来源的关键。
@@ -299,7 +404,8 @@ class TaskPage(BasePage):
         text = self._combo_task.itemText(idx)
         if text and self.state.task_type != text:
             self.state.task_type = text
-            self.state.add_event(f"切换任务类型: {text}", "user")
+            if getattr(self.state, "_session_active", False):
+                self._record_event(f"切换任务类型：{text}", "manual", scope="session")
 
     def _on_user_changed_difficulty(self, idx: int):
         if self._syncing_combo:
@@ -309,10 +415,12 @@ class TaskPage(BasePage):
             old_display = DIFFICULTY_DISPLAY.get(self.state.task_difficulty, "--")
             new_display = DIFFICULTY_DISPLAY.get(new_diff, "--")
             self.state.task_difficulty = new_diff
-            self.state.add_event(
-                f"手动调整难度: {old_display} -> {new_display}",
-                "user",
-            )
+            if getattr(self.state, "_session_active", False):
+                self._record_event(
+                    f"手动调整难度：{old_display} → {new_display}",
+                    "manual",
+                    scope="task" if self._task_active else "session",
+                )
 
     def _sync_combos_from_state(self):
         """state -> ComboBox 单向同步，用 blockSignals 防止回流。
@@ -338,17 +446,89 @@ class TaskPage(BasePage):
         finally:
             self._syncing_combo = False
 
-    def _add_quick_event(self, label: str):
-        self.state.add_event(label, "user")
+    def _event_scope_text(self, scope: str) -> str:
+        if scope == "task":
+            return f"任务：{getattr(self.state, 'task_type', '当前任务')}"
+        return f"会话：{getattr(self.state, 'run_id', '--')}"
+
+    def _record_event(
+        self, label: str, category: str, note: str = "", scope: str | None = None
+    ):
+        """写入事件，并兼容后续扩展的 Session/Task/Event 字段。"""
+        scope = scope or ("task" if self._task_active else "session")
+        method = self.state.add_event
+        supported = inspect.signature(method).parameters
+        extra = {}
+        if label.startswith("开始任务"):
+            event_type = "task_start"
+        elif label.startswith("结束任务"):
+            event_type = "task_end"
+        else:
+            event_type = category
+        candidates = {
+            "source": getattr(self.state, "mode", "live"),
+            "event_type": event_type,
+            "scope": scope,
+            "session_id": getattr(self.state, "run_id", ""),
+            "task_id": (
+                getattr(self.state, "_current_task_id", "")
+                or getattr(self.state, "current_task_id", "")
+            ) if scope == "task" else "",
+        }
+        for key, value in candidates.items():
+            if key in supported:
+                extra[key] = value
+        method(label, category, note, **extra)
+        events = getattr(self.state, "_events", [])
+        if events:
+            event = events[-1]
+            self._event_scopes[getattr(event, "timestamp", id(event))] = self._event_scope_text(scope)
+        self._refresh_table()
+
+    def _ensure_event_session(self) -> bool:
+        if getattr(self.state, "_session_active", False):
+            return True
+        QMessageBox.information(
+            self,
+            "尚未开始监测会话",
+            "事件必须归属于监测会话。请先点击本页上方的“开始监测会话”。",
+        )
+        return False
+
+    def _add_quick_event(self, label: str, category: str = "manual"):
+        if self._ensure_event_session():
+            self._record_event(label, category)
 
     def _add_custom_event(self):
         text = self._input_custom.text().strip()
-        if text:
-            self.state.add_event(text, "user")
+        if text and self._ensure_event_session():
+            self._record_event(text, "manual")
             self._input_custom.clear()
 
     def _clear_events(self):
-        self.state._events.clear()
+        removable = {"user", "manual", "self_report"}
+        events = getattr(self.state, "_events", [])
+        count = sum(
+            1 for event in events
+            if getattr(event, "category", "") in removable
+        )
+        if not count:
+            QMessageBox.information(self, "无需删除", "当前会话没有可删除的人工事件。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认删除人工事件",
+            f"将删除当前会话中的 {count} 条人工标记 / 主观反馈。\n"
+            "系统、模型和自适应审计记录会保留。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        events[:] = [
+            event for event in events
+            if getattr(event, "category", "") not in removable
+        ]
         self._refresh_table()
 
     def _on_event_added(self, event):
@@ -357,19 +537,43 @@ class TaskPage(BasePage):
     def _refresh_table(self):
         events = self.state._events
         self._event_table.setRowCount(len(events))
-        cat_colors = {"user": "#4FC3F7", "system": "#94A3B8", "intervention": "#FBBF24"}
         for i, ev in enumerate(events):
             from datetime import datetime
             ts = datetime.fromtimestamp(ev.timestamp).strftime("%H:%M:%S")
             self._event_table.setItem(i, 0, QTableWidgetItem(ts))
-            cat_item = QTableWidgetItem(ev.category)
+            source = getattr(ev, "category", "")
+            cat_item = QTableWidgetItem(EVENT_SOURCE_DISPLAY.get(source, source or "未知"))
             cat_item.setForeground(Qt.GlobalColor.white)
             self._event_table.setItem(i, 1, cat_item)
-            self._event_table.setItem(i, 2, QTableWidgetItem(ev.label))
-            self._event_table.setItem(i, 3, QTableWidgetItem(ev.note))
+            task_id = getattr(ev, "task_id", "")
+            session_id = getattr(ev, "session_id", "") or getattr(self.state, "run_id", "--")
+            scope = f"任务：{task_id}" if task_id else f"会话：{session_id}"
+            if not scope:
+                scope = self._event_scopes.get(
+                    getattr(ev, "timestamp", id(ev)),
+                    self._event_scope_text("task" if self._task_active else "session"),
+                )
+            self._event_table.setItem(i, 2, QTableWidgetItem(str(scope)))
+            self._event_table.setItem(i, 3, QTableWidgetItem(ev.label))
+            self._event_table.setItem(i, 4, QTableWidgetItem(ev.note))
         self._event_table.scrollToBottom()
 
     def update_state(self, state):
+        requested_role = self._normalize_role(getattr(state, "current_role", self._role))
+        if requested_role != self._role:
+            self.set_role(requested_role)
+
+        session_active = bool(getattr(state, "_session_active", False))
+        self._btn_start_session.setEnabled(not session_active)
+        self._session_relation.setText(
+            f"监测会话：{'进行中' if session_active else '未开始'}"
+        )
+        self._session_relation.setStyleSheet(
+            f"color: {'#4ADE80' if session_active else '#FBBF24'}; font-size: 12px;"
+        )
+        for button in self._event_buttons:
+            button.setEnabled(session_active)
+
         # 任务计时
         if self._task_active:
             elapsed = time.time() - self._task_start
@@ -410,14 +614,14 @@ class TaskPage(BasePage):
 
         # Attention / Meditation：处理 None
         if state.attention is not None:
-            self._state_att.setText(f"Attention: {state.attention:.0f}")
+            self._state_att.setText(f"专注度：{state.attention:.0f}")
         else:
-            self._state_att.setText("Attention: --")
+            self._state_att.setText("专注度：--")
 
         if state.meditation is not None:
-            self._state_med.setText(f"Meditation: {state.meditation:.0f}")
+            self._state_med.setText(f"放松度：{state.meditation:.0f}")
         else:
-            self._state_med.setText("Meditation: --")
+            self._state_med.setText("放松度：--")
 
         # ── 自适应反馈区（双层状态输出：rejected 时不解释）──
         self._refresh_adaptive_feedback(state)
@@ -431,6 +635,22 @@ class TaskPage(BasePage):
         if not hasattr(self, "_last_event_count") or self._last_event_count != len(state._events):
             self._refresh_table()
             self._last_event_count = len(state._events)
+
+        if self._role == "teacher":
+            stable = CLASS_DISPLAY.get(getattr(state, "stable_state", None), "暂无有效趋势")
+            trend = getattr(state, "class_trend_summary", "") or f"当前监测：{stable}"
+            alerts = getattr(state, "class_alerts", None)
+            if alerts:
+                alert_text = f"{len(alerts)} 条待关注"
+            elif getattr(state, "quality_level", "rejected") == "rejected":
+                alert_text = "当前信号质量待处理"
+            else:
+                alert_text = "暂无异常提醒"
+            self._teacher_trend.setText(f"班级状态趋势：{trend}")
+            self._teacher_alert.setText(f"异常提醒：{alert_text}")
+            self._teacher_process.setText(
+                f"过程记录：{len(getattr(state, '_events', []))} 条"
+            )
 
     def _refresh_adaptive_feedback(self, state):
         """刷新 AI 自适应反馈卡片。

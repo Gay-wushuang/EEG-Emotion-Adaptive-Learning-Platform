@@ -32,6 +32,9 @@ class BasePage(QWidget):
         scrollable: bool = False,
     ):
         super().__init__(parent)
+        self._role = self._normalize_role(
+            getattr(getattr(self, "state", None), "current_role", "research")
+        )
 
         # 确保 BasePage 自身使用深色背景
         self.setAutoFillBackground(True)
@@ -107,6 +110,20 @@ class BasePage(QWidget):
     def update_state(self, state):
         """子类重写：根据 DashboardState 刷新页面。"""
         pass
+
+    @staticmethod
+    def _normalize_role(role: str | None) -> str:
+        """将登录层可能使用的角色别名归一为页面使用的三种角色。"""
+        value = str(role or "research").strip().lower()
+        if value in {"student", "learner", "learning", "学习端", "学生"}:
+            return "student"
+        if value in {"teacher", "teaching", "教学端", "教师"}:
+            return "teacher"
+        return "research"
+
+    def set_role(self, role: str):
+        """设置页面角色；具体页面可重写并更新角色化内容。"""
+        self._role = self._normalize_role(role)
 
     def on_show(self):
         """子类重写：页面被切到前台时调用。"""

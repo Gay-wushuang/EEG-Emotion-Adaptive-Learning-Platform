@@ -1,41 +1,63 @@
 @echo off
 setlocal
-chcp 65001 >nul
+chcp 65001 > nul
 title EEG Learning Assistant - Live Mode
-cd /d "%~dp0"
-call :find_python
-if not defined PYTHON_EXE goto :no_python
-if not exist "production_baseline_v1\model.pt" goto :no_model
-echo Launching EEG Learning Assistant - Live Mode...
-echo Python: %PYTHON_EXE%
-echo Entry:  smart_learning_app.main
-echo.
-"%PYTHON_EXE%" -m smart_learning_app.main
-set "APP_EXIT=%errorlevel%"
-if not "%APP_EXIT%"=="0" (
+
+rem ===== Config =====
+set "PYTHON_EXE=%~dp0venv\Scripts\python.exe"
+set "APP_DIR=%~dp0ui_prototype"
+set "PROD_PKG=%~dp0production_baseline_v1"
+set MODE=live
+
+rem ===== Check Python interpreter =====
+if not exist "%PYTHON_EXE%" (
+    echo [ERROR] Python interpreter not found: %PYTHON_EXE%
+    echo Please run setup_env.bat first, or follow the README environment setup.
+    pause
+    exit /b 1
+)
+
+rem ===== Check entry file =====
+if not exist "%APP_DIR%\main.py" (
+    echo [ERROR] UI entry not found: %APP_DIR%\main.py
+    echo Please verify ui_prototype directory exists.
+    pause
+    exit /b 1
+)
+
+rem ===== Verify Production Baseline v1 exists =====
+if not exist "%PROD_PKG%\model.pt" (
+    echo ============================================================
+    echo   [FATAL] Production Baseline v1 package not found
+    echo   Expected: %PROD_PKG%\model.pt
+    echo   Live mode requires the frozen production package.
+    echo   The application will NOT auto-fallback to Mock mode.
+    echo   Please ensure production_baseline_v1/ is present.
+    echo ============================================================
     echo.
-    echo [Abnormal exit] code: %APP_EXIT%
-    echo If a module is missing, run setup_env.bat first.
+    pause
+    exit /b 1
+)
+
+rem ===== All checks passed, launch Live mode =====
+cd /d "%APP_DIR%"
+echo ============================================================
+echo   Launching EEG Learning Assistant - Live Mode
+echo   Python: %PYTHON_EXE%
+echo   Entry:  %APP_DIR%\main.py
+echo   Mode:   %MODE%
+echo   Package: %PROD_PKG%
+echo ============================================================
+echo.
+
+"%PYTHON_EXE%" main.py --mode %MODE% --package-dir "%PROD_PKG%"
+
+set "EXIT_CODE=%errorlevel%"
+
+rem ===== Pause on abnormal exit =====
+if not "%EXIT_CODE%"=="0" (
+    echo.
+    echo [Abnormal exit] code: %EXIT_CODE%
     pause
 )
-exit /b %APP_EXIT%
-
-:find_python
-set "PYTHON_EXE="
-if defined EEG_PYTHON if exist "%EEG_PYTHON%" set "PYTHON_EXE=%EEG_PYTHON%"
-if not defined PYTHON_EXE if exist "%~dp0.venv\Scripts\python.exe" if exist "%~dp0.venv\pyvenv.cfg" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-if not defined PYTHON_EXE if defined CONDA_PREFIX if exist "%CONDA_PREFIX%\python.exe" set "PYTHON_EXE=%CONDA_PREFIX%\python.exe"
-exit /b 0
-
-:no_python
-echo [ERROR] No complete Python environment was found.
-echo Do not copy python.exe into the project directory; it cannot run by itself.
-echo Run setup_env.bat to create .venv, then start this file again.
-pause
-exit /b 106
-
-:no_model
-echo [ERROR] production_baseline_v1\model.pt is missing.
-echo Pull the complete repository before starting Live mode.
-pause
-exit /b 2
+exit /b %EXIT_CODE%

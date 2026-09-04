@@ -1,34 +1,43 @@
 @echo off
 setlocal
-chcp 65001 >nul
-title EEG Learning Assistant - Demo Mode
-cd /d "%~dp0"
-call :find_python
-if not defined PYTHON_EXE goto :no_python
-echo Launching EEG Learning Assistant - Demo Mode...
+chcp 65001 > nul
+title EEG Learning Assistant - UI Prototype
+
+rem ===== Config =====
+set "PYTHON_EXE=%~dp0venv\Scripts\python.exe"
+set "APP_DIR=%~dp0ui_prototype"
+
+rem ===== Check Python interpreter =====
+if not exist "%PYTHON_EXE%" (
+    echo [ERROR] Python interpreter not found: %PYTHON_EXE%
+    echo Please run setup_env.bat first, or follow the README environment setup.
+    pause
+    exit /b 1
+)
+
+rem ===== Check entry file =====
+if not exist "%APP_DIR%\main.py" (
+    echo [ERROR] UI entry not found: %APP_DIR%\main.py
+    echo Please verify ui_prototype directory exists.
+    pause
+    exit /b 1
+)
+
+rem ===== Switch to UI dir and launch =====
+cd /d "%APP_DIR%"
+echo Launching EEG Learning Assistant UI Prototype...
 echo Python: %PYTHON_EXE%
-echo Entry:  ui_prototype\main.py
+echo Entry:  %APP_DIR%\main.py
 echo.
-"%PYTHON_EXE%" ui_prototype\main.py --mode mock
-set "APP_EXIT=%errorlevel%"
-if not "%APP_EXIT%"=="0" (
+
+"%PYTHON_EXE%" main.py --mode mock
+
+set "EXIT_CODE=%errorlevel%"
+
+rem ===== Pause on abnormal exit =====
+if not "%EXIT_CODE%"=="0" (
     echo.
-    echo [Abnormal exit] code: %APP_EXIT%
-    echo If a module is missing, run setup_env.bat first.
+    echo [Abnormal exit] code: %EXIT_CODE%
     pause
 )
-exit /b %APP_EXIT%
-
-:find_python
-set "PYTHON_EXE="
-if defined EEG_PYTHON if exist "%EEG_PYTHON%" set "PYTHON_EXE=%EEG_PYTHON%"
-if not defined PYTHON_EXE if exist "%~dp0.venv\Scripts\python.exe" if exist "%~dp0.venv\pyvenv.cfg" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-if not defined PYTHON_EXE if defined CONDA_PREFIX if exist "%CONDA_PREFIX%\python.exe" set "PYTHON_EXE=%CONDA_PREFIX%\python.exe"
-exit /b 0
-
-:no_python
-echo [ERROR] No complete Python environment was found.
-echo Do not copy python.exe into the project directory; it cannot run by itself.
-echo Run setup_env.bat to create .venv, then start this file again.
-pause
-exit /b 106
+exit /b %EXIT_CODE%

@@ -23,12 +23,12 @@ import os
 from pathlib import Path
 from typing import Optional, Literal
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QStackedWidget, QButtonGroup, QStatusBar,
-    QFrame, QSizePolicy, QSpacerItem,
+    QFrame, QSizePolicy, QSpacerItem, QMessageBox,
 )
 
 from services.dashboard_state import (
@@ -41,6 +41,13 @@ from services.dashboard_state import (
 )
 from services.mock_data_service import MockDataService
 from services.font_loader import ensure_chinese_font
+from services.identity_store import (
+    ROLE_LABELS,
+    ROLE_RESEARCH,
+    ROLE_STUDENT,
+    ROLE_TEACHER,
+    VALID_ROLES,
+)
 
 from pages.welcome_page import WelcomePage
 from pages.baseline_page import BaselinePage
@@ -64,6 +71,18 @@ NAV_ITEMS = [
     ("replay", "CSV回放", "7"),
 ]
 
+ROLE_PAGE_KEYS = {
+    ROLE_STUDENT: ("welcome", "baseline", "dashboard"),
+    ROLE_TEACHER: ("baseline", "dashboard", "task", "history"),
+    ROLE_RESEARCH: tuple(item[0] for item in NAV_ITEMS),
+}
+
+ROLE_DEFAULT_PAGE = {
+    ROLE_STUDENT: "welcome",
+    ROLE_TEACHER: "baseline",
+    ROLE_RESEARCH: "welcome",
+}
+
 
 class MainWindow(QMainWindow):
     """主窗口。
@@ -74,20 +93,29 @@ class MainWindow(QMainWindow):
         package_dir: Production Baseline v1 包路径（仅 live 模式需要）
     """
 
+    identity_switch_requested = Signal()
+
     def __init__(
         self,
         mode: Literal["mock", "live"] = "mock",
         package_dir: Optional[Path] = None,
+        user_id: str = "demo_user",
+        user_name: str = "演示用户",
+        role: str = ROLE_RESEARCH,
     ):
         super().__init__()
         ensure_chinese_font()
         self._mode = mode
+        self._user_id = user_id.strip() or "demo_user"
+        self._user_name = user_name.strip() or "演示用户"
+        self._role = role if role in VALID_ROLES else ROLE_RESEARCH
         self.setWindowTitle("智学脑机助手 - 单通道脑机接口学习状态辅助系统")
         self.resize(1920, 1080)
         self.setMinimumSize(1280, 700)
 
         # ── 核心状态与服务 ──
         self.state = DashboardState()
+        self._inject_identity_into_state()
 
         if mode == "live":
             # Live 模式：接入真实 ThinkGear + Production Baseline v1
@@ -133,8 +161,9 @@ class MainWindow(QMainWindow):
         self.state.state_updated.connect(self._on_state_updated)
         self.state.event_added.connect(self._on_event_added)
 
-        # 默认显示欢迎页
-        self._navigate_to("welcome")
+        # 直接实例化 MainWindow 时默认是 research，兼容原有全页面测试。
+        self._apply_role_navigation()
+        self._navigate_to(ROLE_DEFAULT_PAGE[self._role])
 
     def _init_live_service(self, package_dir: Optional[Path]) -> None:
         """初始化 Live 服务：加载 Production Baseline v1 包并启动。
@@ -188,7 +217,21 @@ class MainWindow(QMainWindow):
         subtitle.setObjectName("AppSubtitle")
         layout.addWidget(subtitle)
 
-        layout.addSpacing(16)
+        layout.addSpacing(12)
+
+        self._identity_label = QLabel()
+        self._identity_label.setWordWrap(True)
+        self._identity_label.setStyleSheet(
+            "color: #D8DFE9; font-size: 13px; font-weight: 600; padding-top: 4px;"
+        )
+        layout.addWidget(self._identity_label)
+
+        self._role_label = QLabel()
+        self._role_label.setObjectName("AppSubtitle")
+        layout.addWidget(self._role_label)
+        self._refresh_identity_labels()
+
+        layout.addSpacing(10)
 
         # 导航按钮
         self._nav_group = QButtonGroup(self)
@@ -206,6 +249,11 @@ class MainWindow(QMainWindow):
             layout.addWidget(btn)
 
         layout.addStretch()
+
+        switch_identity = QPushButton("切换身份 / 使用端")
+        switch_identity.setMinimumHeight(36)
+        switch_identity.clicked.connect(self._request_identity_switch)
+        layout.addWidget(switch_identity)
 
         # 底部版本信息（标注当前模式）
         if self._mode == "live":
@@ -276,7 +324,7 @@ class MainWindow(QMainWindow):
         return bar
 
     def _navigate_to(self, key: str):
-        if key not in self._pages:
+        if key not in self._pages or key not in ROLE_PAGE_KEYS[self._role]:
             return
         # 通知旧页面隐藏
         current = self.stack.currentWidget()
@@ -371,6 +419,71 @@ class MainWindow(QMainWindow):
 
     def _on_event_added(self, event):
         pass  # 各页面自行监听 event_added
+
+    def _inject_identity_into_state(self) -> None:
+        """Keep identity data on the existing state without changing its schema."""
+        self.state._user_id = self._user_id
+        self.state._user_name = self._user_name
+        self.state._user_role = self._role
+
+    def _refresh_identity_labels(self) -> None:
+        if hasattr(self, "_identity_label"):
+            self._identity_label.setText(
+                f"{self._user_name}\nID: {self._user_id}"
+            )
+        if hasattr(self, "_role_label"):
+            self._role_label.setText(ROLE_LABELS[self._role])
+
+    def _apply_role_navigation(self) -> None:
+        allowed = set(ROLE_PAGE_KEYS[self._role])
+        for key, button in self._nav_buttons.items():
+            button.setVisible(key in allowed)
+
+        if hasattr(self, "stack"):
+            current = self.stack.currentWidget()
+            current_key = next(
+                (key for key, page in self._pages.items() if page is current),
+                None,
+            )
+            if current_key not in allowed:
+                self._navigate_to(ROLE_DEFAULT_PAGE[self._role])
+
+    def set_identity(self, user_id: str, user_name: str, role: str) -> None:
+        """Apply a login result without rebuilding services or page widgets."""
+        user_id = user_id.strip()
+        user_name = user_name.strip()
+        if not user_id or not user_name:
+            raise ValueError("用户 ID 和姓名不能为空。")
+        if role not in VALID_ROLES:
+            raise ValueError("未知的系统角色。")
+
+        self._user_id = user_id
+        self._user_name = user_name
+        self._role = role
+        self._inject_identity_into_state()
+        self._refresh_identity_labels()
+        self._apply_role_navigation()
+
+        # 基线页已有兼容字段；同步输入框，防止切换身份后又写回旧用户。
+        baseline = self._pages.get("baseline")
+        if baseline is not None:
+            if hasattr(baseline, "_input_uid"):
+                baseline._input_uid.setText(user_id)
+            if hasattr(baseline, "_input_name"):
+                baseline._input_name.setText(user_name)
+
+        self._navigate_to(ROLE_DEFAULT_PAGE[role])
+        self.state.emit_update()
+
+    def _request_identity_switch(self) -> None:
+        if self.state._session_active:
+            QMessageBox.information(
+                self,
+                "会话正在进行",
+                "请先结束并保存当前会话，再切换身份或使用端。",
+            )
+            return
+        self.identity_switch_requested.emit()
 
     def closeEvent(self, event):
         """关闭窗口时停止后台线程，确保采集/推理线程干净退出。"""

@@ -6,7 +6,7 @@ import time
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
-    QPushButton, QLineEdit, QFrame, QProgressBar, QComboBox, QSizePolicy,
+    QPushButton, QLineEdit, QFrame, QProgressBar, QSpinBox, QSizePolicy,
 )
 
 from pages.base_page import BasePage
@@ -52,26 +52,34 @@ class BaselinePage(BasePage):
         form.setSpacing(10)
 
         form.addWidget(QLabel("用户ID:"), 0, 0)
-        self._input_uid = QLineEdit(self.state._user_id)
-        self._input_uid.setPlaceholderText("输入用户ID")
+        user_id = getattr(self.state, "_user_id", "")
+        if user_id == "demo_user":
+            user_id = ""
+        self._input_uid = QLineEdit(user_id)
+        self._input_uid.setPlaceholderText("输入匿名用户ID，例如 S20260903001")
         form.addWidget(self._input_uid, 0, 1)
 
-        form.addWidget(QLabel("姓名:"), 0, 2)
-        self._input_name = QLineEdit(self.state._user_name)
-        self._input_name.setPlaceholderText("输入姓名")
+        form.addWidget(QLabel("显示名称:"), 0, 2)
+        user_name = getattr(self.state, "_user_name", "")
+        if user_name == "演示用户":
+            user_name = ""
+        self._input_name = QLineEdit(user_name)
+        self._input_name.setPlaceholderText("可选；不建议填写真实姓名")
         form.addWidget(self._input_name, 0, 3)
 
-        form.addWidget(QLabel("任务类型:"), 1, 0)
-        self._combo_task = QComboBox()
-        self._combo_task.addItems(["数学练习", "英语阅读", "编程任务", "物理复习", "自由学习"])
-        form.addWidget(self._combo_task, 1, 1)
+        form.addWidget(QLabel("采集时长:"), 1, 0)
+        self._combo_duration = QSpinBox()
+        self._combo_duration.setRange(60, 90)
+        self._combo_duration.setSingleStep(5)
+        self._combo_duration.setSuffix(" 秒")
+        self._combo_duration.setValue(int(getattr(self.state, "_baseline_target", 75)))
+        self._combo_duration.valueChanged.connect(self._on_duration_change)
+        form.addWidget(self._combo_duration, 1, 1)
 
-        form.addWidget(QLabel("采集时长:"), 1, 2)
-        self._combo_duration = QComboBox()
-        self._combo_duration.addItems(["60秒", "75秒", "90秒"])
-        self._combo_duration.setCurrentIndex(1)
-        self._combo_duration.currentIndexChanged.connect(self._on_duration_change)
-        form.addWidget(self._combo_duration, 1, 3)
+        ownership = QLabel("学习任务与难度在监测页或“任务与事件”页设置；基线仅用于个人校准。")
+        ownership.setWordWrap(True)
+        ownership.setStyleSheet("color: #8491A5; font-size: 12px;")
+        form.addWidget(ownership, 1, 2, 1, 2)
 
         user_card.add_widget(self._wrap_layout(form))
         left.addWidget(user_card)
@@ -122,11 +130,11 @@ class BaselinePage(BasePage):
         sig_layout = QGridLayout()
         sig_layout.setSpacing(8)
 
-        self._ind_poor = StatusIndicator("Poor Signal")
+        self._ind_poor = StatusIndicator("接触质量（Poor Signal）")
         sig_layout.addWidget(self._ind_poor, 0, 0)
-        self._ind_att = StatusIndicator("Attention")
+        self._ind_att = StatusIndicator("专注度")
         sig_layout.addWidget(self._ind_att, 0, 1)
-        self._ind_med = StatusIndicator("Meditation")
+        self._ind_med = StatusIndicator("放松度")
         sig_layout.addWidget(self._ind_med, 1, 0)
         self._ind_conf = StatusIndicator("信号质量等级")
         sig_layout.addWidget(self._ind_conf, 1, 1)
@@ -141,9 +149,9 @@ class BaselinePage(BasePage):
         self._btn_start.clicked.connect(self._start_baseline)
         btn_layout.addWidget(self._btn_start)
 
-        self._btn_stop = QPushButton("结束采集")
+        self._btn_stop = QPushButton("提前结束")
         self._btn_stop.setEnabled(False)
-        self._btn_stop.setToolTip("基线采集中可提前结束")
+        self._btn_stop.setToolTip("提前结束不会生成有效基线，可重新采集")
         self._btn_stop.clicked.connect(self._stop_baseline)
         btn_layout.addWidget(self._btn_stop)
 
@@ -151,7 +159,8 @@ class BaselinePage(BasePage):
         self._btn_next.setObjectName("SuccessButton")
         self._btn_next.setEnabled(False)
         self._btn_next.setToolTip("完成一次基线采集后可打开实时分析")
-        btn_layout.addWidget(self._btn_next)
+        # 保留对象供旧版主窗口连接，但不再显示重复的页面跳转入口。
+        self._btn_next.setVisible(False)
 
         left.addLayout(btn_layout)
         main_layout.addLayout(left, 0)
@@ -174,9 +183,9 @@ class BaselinePage(BasePage):
         stats_layout = QGridLayout()
         stats_layout.setSpacing(8)
 
-        self._stat_att = self._make_stat("平均Attention", "--")
+        self._stat_att = self._make_stat("平均专注度", "--")
         stats_layout.addWidget(self._stat_att["card"], 0, 0)
-        self._stat_med = self._make_stat("平均Meditation", "--")
+        self._stat_med = self._make_stat("平均放松度", "--")
         stats_layout.addWidget(self._stat_med["card"], 0, 1)
         self._stat_qual = self._make_stat("信号合格率", "--")
         stats_layout.addWidget(self._stat_qual["card"], 1, 0)
@@ -201,9 +210,8 @@ class BaselinePage(BasePage):
         w.setLayout(layout)
         return w
 
-    def _on_duration_change(self, idx: int):
-        durations = [60.0, 75.0, 90.0]
-        self.state._baseline_target = durations[idx]
+    def _on_duration_change(self, seconds: int):
+        self.state._baseline_target = float(seconds)
         self._label_time.setText(f"已用时间：0秒 / {int(self.state._baseline_target)}秒")
 
     def _start_baseline(self):
@@ -211,8 +219,8 @@ class BaselinePage(BasePage):
             self._label_status.setText("无法采集：设备未连接")
             self._label_status.setStyleSheet("font-size: 16px; color: #F87171;")
             return
-        self.state._user_id = self._input_uid.text() or "demo_user"
-        self.state._user_name = self._input_name.text() or "演示用户"
+        self.state._user_id = self._input_uid.text().strip() or "anonymous"
+        self.state._user_name = self._input_name.text().strip() or "匿名用户"
         self.state._baseline_phase = "collecting"
         self._baseline_active = True
         self._baseline_done = False
@@ -227,19 +235,39 @@ class BaselinePage(BasePage):
         self._btn_next.setEnabled(False)
         self._label_status.setText("采集中...")
         self._label_status.setStyleSheet("font-size: 16px; color: #4FC3F7;")
+        self._ring.set_progress(0.0)
+        self._ring.set_text("0%")
+        self._progress_bar.setValue(0)
 
     def _stop_baseline(self):
+        """用户提前结束：保留统计预览，但不得宣称基线完成。"""
+        self._finish_baseline(completed=False)
+
+    def _complete_baseline(self):
+        """仅由达到目标时长的自动流程调用。"""
+        self._finish_baseline(completed=True)
+
+    def _finish_baseline(self, completed: bool):
         self._baseline_active = False
-        self.state._baseline_phase = "done"
-        self._baseline_done = True
+        self.state._baseline_phase = "done" if completed else "incomplete"
+        self._baseline_done = completed
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
-        self._btn_next.setEnabled(True)
-        self._label_status.setText("采集完成")
-        self._label_status.setStyleSheet("font-size: 16px; color: #4ADE80;")
+        self._btn_next.setEnabled(completed)
+        if completed:
+            self._ring.set_progress(1.0)
+            self._ring.set_text("100%")
+            self._progress_bar.setValue(100)
+            self._label_status.setText("采集完成")
+            self._label_status.setStyleSheet("font-size: 16px; color: #4ADE80;")
+        else:
+            self._label_status.setText("已提前结束，未形成有效基线")
+            self._label_status.setStyleSheet("font-size: 16px; color: #FBBF24;")
         self._finalize_stats()
 
     def _finalize_stats(self):
+        self.state._baseline_elapsed = max(0.0, time.time() - self._baseline_start)
+        self.state._baseline_samples = len(self._att_values)
         if not self._att_values:
             return
         avg_att = sum(self._att_values) / len(self._att_values)
@@ -251,9 +279,6 @@ class BaselinePage(BasePage):
         self._stat_med["label"].setText(f"{avg_med:.1f}")
         self._stat_qual["label"].setText(f"{qual_rate*100:.0f}%")
         self._stat_samples["label"].setText(f"{len(self._att_values)}")
-
-        self.state._baseline_elapsed = time.time() - self._baseline_start
-        self.state._baseline_samples = len(self._att_values)
 
     def update_state(self, state):
         # EEG曲线 — 使用内部缓冲 _eeg_raw_buffer
@@ -340,7 +365,7 @@ class BaselinePage(BasePage):
 
             # 自动结束
             if elapsed >= target:
-                self._stop_baseline()
+                self._complete_baseline()
 
     def on_hide(self):
         pass
