@@ -309,6 +309,8 @@ class LiveDataService(QObject):
         self._last_tick = time.monotonic()
         self._session_running = False
         self.sessions_dir = Path(package_dir).parent / "data" / "sessions"
+        self.state.mode = "live"
+        self.state.configure_session_store(self.sessions_dir, include_demo=False)
         self._session_writer: SessionCsvWriter | None = None
         self._session_csv_path: Path | None = None
         self._session_raw_origin = 0
@@ -331,21 +333,25 @@ class LiveDataService(QObject):
 
     def stop_streaming(self) -> None:
         self._timer.stop()
-        if self._session_writer is not None:
-            self.end_session()
+        if self._session_writer is not None or self._session_running:
+            self.end_session(status="interrupted")
         self.acquisition.stop()
         self.inference.stop()
 
     def start_session(self) -> str:
         if self._session_writer is not None:
-            self._session_writer.close()
+            self.end_session(status="interrupted")
         self._session_csv_path = self.sessions_dir / self.state.run_id / "session.csv"
         self._session_writer = SessionCsvWriter(self._session_csv_path)
         self._session_writer.start()
         self._session_raw_origin = int(self.state._raw_sample_count)
         self._accepted_states.clear()
         self._inference_index = 0
-        self.state._session_active = True
+        self.state.begin_session(
+            source="live",
+            demo=False,
+            data_files={"raw_csv": "session.csv"},
+        )
         self._session_running = True
         return str(self._session_csv_path)
 
@@ -357,14 +363,32 @@ class LiveDataService(QObject):
         self.state._session_active = True
         self._session_running = True
 
-    def end_session(self) -> str | None:
-        self.state._session_active = False
+    def end_session(self, status: str = "completed") -> str | None:
         self._session_running = False
         writer, self._session_writer = self._session_writer, None
         if writer is None:
-            return None
+            metadata = self.state.finalize_session(status=status)
+            return metadata
         if not writer.close():
-            self._on_error(f"会话CSV保存失败：{writer.error}")
+            self.state.feedback_text = (
+                "会话数据保存失败，请检查 data/sessions 文件夹写入权限。"
+            )
+            self.state.last_session_save_error = str(writer.error or "会话CSV保存失败")
+            self.state.finalize_session(
+                status="save_error",
+                data_files={"raw_csv": "session.csv"},
+            )
+            self.state.emit_update()
+            return None
+        metadata = self.state.finalize_session(
+            status=status,
+            data_files={"raw_csv": writer.path.name},
+        )
+        if metadata is None and self.state.last_session_save_error:
+            self.state.feedback_text = (
+                "会话摘要保存失败，请检查 data/sessions 文件夹写入权限。"
+            )
+            self.state.emit_update()
             return None
         return str(writer.path)
 
@@ -372,6 +396,18 @@ class LiveDataService(QObject):
         self.state.mode = "live"
         self.state.connector_status = status["connector_status"]
         self.state.device_status = status["device_status"]
+        if self.state.model_error_detail:
+            self.state.pipeline_state = "error"
+        elif status["connector_status"] == "connecting":
+            self.state.pipeline_state = "starting"
+        elif status["device_status"] == "waiting_raw":
+            self.state.pipeline_state = "waiting_data"
+        elif status["device_status"] == "online":
+            self.state.pipeline_state = (
+                "ready" if self.state.warmup_complete else "warming_up"
+            )
+        else:
+            self.state.pipeline_state = "rejected"
         if status["device_status"] != "online":
             self.state.poor_signal = None
             self.state.attention = None
@@ -382,6 +418,7 @@ class LiveDataService(QObject):
             self.state.quality_reasons = [status.get("reason", "等待设备数据")]
             self._accepted_states.clear()
             self.state.stable_state = None
+            self.state.clear_interpretation()
             # 设备离线时复位自适应引擎
             self.engine.reset()
             self.state._intervention_triggered = False
@@ -405,6 +442,7 @@ class LiveDataService(QObject):
         s.warmup_progress = min(1.0, batch["buffer_samples"] / WINDOW_SAMPLES)
         self._update_quality()
         self._record_batch(batch)
+        s.capture_session_snapshot()
         s.emit_update()
 
     def _record_batch(self, batch: dict) -> None:
@@ -450,6 +488,14 @@ class LiveDataService(QObject):
             s.quality_level, s.quality_reasons = "warning", ["正在填充30秒分析窗口"]
         else:
             s.quality_level, s.quality_reasons = "trusted", []
+        if s.model_error_detail:
+            s.pipeline_state = "error"
+        elif s.quality_level == "rejected":
+            s.pipeline_state = "rejected"
+        elif not s.warmup_complete:
+            s.pipeline_state = "warming_up"
+        else:
+            s.pipeline_state = "ready"
 
     def _on_window(self, window: dict) -> None:
         if self.state.quality_level != "rejected":
@@ -457,6 +503,8 @@ class LiveDataService(QObject):
 
     def _on_result(self, result) -> None:
         s = self.state
+        s.model_error_user = ""
+        s.model_error_detail = ""
         probs = np.asarray(result.probabilities, dtype=float)
         s.prob_positive, s.prob_neutral, s.prob_negative = probs.tolist()
         s.predicted_state = result.display_class
@@ -476,6 +524,7 @@ class LiveDataService(QObject):
             # Rejected predictions are not votes and do not erase prior valid evidence.
             s.stable_state = s.stable_state if self._accepted_states else None
             s.feedback_text = "当前状态置信度不足，继续观察后再提供学习建议。"
+        s.pipeline_state = "ready" if result.accepted else "rejected"
 
         # ── 自适应决策（委托给共享引擎）──
         # 关键修复：传入 result.accepted，当 Production Baseline 拒识时
@@ -505,7 +554,20 @@ class LiveDataService(QObject):
         s.emit_update()
 
     def _on_error(self, message: str) -> None:
-        self.state.feedback_text = message
+        is_model_error = any(token in message for token in (
+            "模型", "推理", "Production", "Scaler", "checksum",
+        ))
+        if is_model_error:
+            self.state.set_pipeline_error(
+                "模型暂不可用，已停止学习状态解释；请在设置与诊断页检查模型文件。",
+                message,
+            )
+        else:
+            self.state.pipeline_state = "error"
+            self.state.quality_level = "rejected"
+            self.state.quality_reasons = ["设备连接异常，请检查 ThinkGear Connector。"]
+            self.state.feedback_text = "设备连接异常，请检查 ThinkGear Connector 后重试。"
+            self.state.clear_interpretation()
         self.state.emit_update()
 
     def _tick(self) -> None:

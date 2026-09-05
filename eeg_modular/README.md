@@ -133,17 +133,6 @@ eeg_modular/
 
 ## 🚀 快速开始
 
-### 在另一台 Windows 电脑运行桌面应用
-
-仓库不包含、也不能通过复制单个 `python.exe` 来分发 Python 环境。首次运行请：
-
-1. 安装 64 位 Python 3.10，并勾选 Python Launcher；
-2. 双击 `setup_env.bat`，创建本机专用的 `.venv` 并按 `requirements-app.lock` 安装冻结的运行依赖；
-3. 演示模式双击 `run_ui.bat`；
-4. 真实 MindWave 模式先启动 ThinkGear Connector，再双击 `run_live_ui.bat`。
-
-启动器只接受完整的 `.venv`、当前 Conda 环境或显式设置的 `EEG_PYTHON`，不会使用项目目录下缺少 `pyvenv.cfg` 的孤立 `python.exe`。
-
 ### 环境要求
 
 - Python 3.8+
@@ -169,6 +158,24 @@ pip install -r requirements.txt
 # 4. 安装额外依赖 (可选)
 pip install umap-learn seaborn xgboost torch torchvision
 ```
+
+### 启动 Windows 桌面端
+
+Windows 桌面端使用项目目录中的 `venv`，不依赖开发者个人电脑上的绝对路径。
+
+```bat
+setup_env.bat       rem 首次运行：创建/检查环境
+run_ui.bat          rem Mock 演示模式
+run_live_ui.bat     rem 真实 ThinkGear + Production Baseline 模式
+```
+
+也可以在仓库最外层双击：
+
+- `启动.bat`：打开普通桌面端；
+- `启动真实EEG.bat`：打开真实设备模式；
+- `运行测试.bat`：只运行自动测试，不启动正式界面。
+
+应用启动后先选择或创建用户 ID，再选择学习端、教学端或管理/研究端。三个端共用同一套数据与状态接口，但按角色隐藏无关页面。
 
 ### 训练你的第一个模型 (推荐CNN)
 

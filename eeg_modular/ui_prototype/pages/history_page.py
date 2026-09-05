@@ -1,7 +1,7 @@
 """页面5：历史会话与报告页。
 
-UI 只消费 DashboardState 的正式字段与内部簿记字段 _history_sessions。
-所有预填充的 SessionRecord 均标记 demo=True，属于演示数据。
+页面显示由 ``DashboardState.reload_history`` 自动索引的本地记录。
+Live/Replay 正式记录与 Mock 演示记录在存储和展示上均明确区分。
 """
 
 from __future__ import annotations
@@ -29,16 +29,17 @@ class HistoryPage(BasePage):
         self._build_ui()
 
     def _build_ui(self):
-        # ── 演示数据警告横幅（始终可见）──
-        demo_banner = QLabel("注意：以下为演示数据，非真实历史记录")
-        demo_banner.setStyleSheet(
+        # 仅在当前结果包含 Mock/演示记录时显示，正式历史默认无横幅。
+        self._demo_banner = QLabel("当前包含 Mock 演示记录，与正式数据分开保存")
+        self._demo_banner.setStyleSheet(
             "background-color: #1B2534; border: 1px solid #303C50; "
             "color: #AAB5C5; font-size: 13px; font-weight: 500; "
             "padding: 8px 12px; border-radius: 8px;"
         )
-        demo_banner.setFixedHeight(38)
-        demo_banner.setAlignment(Qt.AlignCenter)
-        self.content_layout.addWidget(demo_banner)
+        self._demo_banner.setFixedHeight(38)
+        self._demo_banner.setAlignment(Qt.AlignCenter)
+        self._demo_banner.setVisible(False)
+        self.content_layout.addWidget(self._demo_banner)
 
         splitter = QSplitter(Qt.Horizontal)
 
@@ -66,7 +67,7 @@ class HistoryPage(BasePage):
         self._table = QTableWidget()
         self._table.setColumnCount(7)
         self._table.setHorizontalHeaderLabels(
-            ["会话ID", "开始时间", "时长", "任务", "信号质量", "事件数", "标记"]
+            ["会话ID", "开始时间", "时长", "任务", "信号质量", "事件数", "来源"]
         )
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -83,10 +84,10 @@ class HistoryPage(BasePage):
 
         # 数据操作
         actions = QHBoxLayout()
-        btn_folder = QPushButton("打开真实会话文件夹")
+        btn_folder = QPushButton("打开会话文件夹")
         btn_folder.clicked.connect(self._open_sessions_folder)
         actions.addWidget(btn_folder)
-        btn_export = QPushButton("导出演示记录 (CSV)")
+        btn_export = QPushButton("导出当前记录 (CSV)")
         btn_export.clicked.connect(self._export_all)
         actions.addWidget(btn_export)
         left_layout.addLayout(actions)
@@ -118,6 +119,7 @@ class HistoryPage(BasePage):
         self._detail_labels = {}
         fields = [
             ("session_id", "会话ID"),
+            ("source", "数据来源"),
             ("user_id", "用户ID"),
             ("start_time", "开始时间"),
             ("duration", "时长"),
@@ -211,6 +213,8 @@ class HistoryPage(BasePage):
 
     def _refresh_table(self):
         sessions = self._get_sorted_sessions()
+        has_demo = any(getattr(item, "demo", False) for item in sessions)
+        self._demo_banner.setVisible(has_demo)
 
         self._table.setRowCount(len(sessions))
         for i, s in enumerate(sessions):
@@ -219,12 +223,12 @@ class HistoryPage(BasePage):
             mins = int(s.duration_seconds) // 60
             secs = int(s.duration_seconds) % 60
             self._table.setItem(i, 2, QTableWidgetItem(f"{mins}分{secs}秒"))
-            self._table.setItem(i, 3, QTableWidgetItem(s.notes))
+            self._table.setItem(i, 3, QTableWidgetItem(s.primary_task or s.notes))
             self._table.setItem(i, 4, QTableWidgetItem(f"{s.signal_quality*100:.0f}%"))
             self._table.setItem(i, 5, QTableWidgetItem(str(s.event_count)))
 
-            # 标记列：演示数据显示"演示"
-            demo_item = QTableWidgetItem("演示" if s.demo else "--")
+            source_names = {"live": "Live", "mock": "Mock 演示", "replay": "Replay"}
+            demo_item = QTableWidgetItem(source_names.get(s.source, s.source or "--"))
             if s.demo:
                 demo_item.setForeground(QColor("#FBBF24"))
             self._table.setItem(i, 6, demo_item)
@@ -244,10 +248,15 @@ class HistoryPage(BasePage):
         secs = int(s.duration_seconds) % 60
 
         self._detail_labels["session_id"].setText(s.session_id)
+        self._detail_labels["source"].setText(
+            {"live": "Live 真实采集", "mock": "Mock 演示", "replay": "Replay 回放"}.get(
+                s.source, s.source or "--"
+            )
+        )
         self._detail_labels["user_id"].setText(s.user_id)
         self._detail_labels["start_time"].setText(s.start_time)
         self._detail_labels["duration"].setText(f"{mins}分{secs}秒")
-        self._detail_labels["task"].setText(s.notes)
+        self._detail_labels["task"].setText(s.primary_task or s.notes)
         self._detail_labels["avg_attention"].setText(f"{s.avg_attention:.1f}")
         self._detail_labels["avg_meditation"].setText(f"{s.avg_meditation:.1f}")
         self._detail_labels["signal_quality"].setText(f"{s.signal_quality*100:.0f}%")
@@ -273,8 +282,9 @@ class HistoryPage(BasePage):
         note_prefix = "【演示数据】" if getattr(s, "demo", False) else ""
         self._notes_label.setText(
             f"{note_prefix}"
-            f"任务类型：{s.notes}\n"
+            f"任务类型：{s.primary_task or s.notes}\n"
             f"会话ID：{s.session_id}\n"
+            f"任务段：{len(getattr(s, 'tasks', []))} 个；事件：{len(getattr(s, 'events', []))} 条\n"
             f"该会话信号质量{'良好' if s.signal_quality > 0.7 else '一般' if s.signal_quality > 0.5 else '较差'}，"
             f"积极状态占比{s.positive_ratio*100:.1f}%。"
         )
@@ -289,17 +299,18 @@ class HistoryPage(BasePage):
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
-                "session_id", "user_id", "start_time", "duration_seconds",
+                "session_id", "source", "demo", "status", "user_id", "start_time", "end_time", "duration_seconds",
                 "positive_ratio", "neutral_ratio", "negative_ratio",
                 "avg_attention", "avg_meditation", "signal_quality",
-                "event_count", "notes", "demo",
+                "task_count", "event_count", "notes",
             ])
             for s in self.state._history_sessions:
                 writer.writerow([
-                    s.session_id, s.user_id, s.start_time, s.duration_seconds,
+                    s.session_id, s.source, s.demo, s.status, s.user_id,
+                    s.start_time, s.end_time, s.duration_seconds,
                     s.positive_ratio, s.neutral_ratio, s.negative_ratio,
                     s.avg_attention, s.avg_meditation, s.signal_quality,
-                    s.event_count, s.notes, getattr(s, "demo", False),
+                    len(s.tasks), s.event_count, s.notes,
                 ])
         QMessageBox.information(
             self, "导出成功",
@@ -313,4 +324,7 @@ class HistoryPage(BasePage):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def on_show(self):
+        # Mock records are visible only in Mock mode.  Live/Replay defaults to
+        # formal records, preventing demo history from contaminating reports.
+        self.state.reload_history(include_demo=self.state.mode == "mock")
         self._refresh_table()

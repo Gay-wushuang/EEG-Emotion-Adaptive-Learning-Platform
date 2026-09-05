@@ -22,3 +22,8 @@ pyyaml
 # 其他可能需要的依赖
 pandas
 scipy
+
+# Windows desktop UI runtime
+PySide6>=6.8,<7
+pyqtgraph>=0.14,<0.15
+reportlab>=4.4,<5

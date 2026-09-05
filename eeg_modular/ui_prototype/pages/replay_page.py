@@ -32,6 +32,9 @@ from widgets.gauge import ArcGauge
 from services.dashboard_state import CLASS_DISPLAY
 
 
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _generate_sample_csv() -> str:
     """生成模拟CSV回放数据（演示数据）。"""
     output = io.StringIO()
@@ -109,13 +112,15 @@ class ReplayPage(BasePage):
         control_layout = QHBoxLayout()
         control_layout.setSpacing(10)
 
-        self._btn_load = QPushButton("加载一个或多个CSV")
+        self._btn_load = QPushButton("选择 CSV（替换当前数据）")
+        self._btn_load.setToolTip("单次可多选文件；每次加载都会替换当前回放数据")
         self._btn_load.clicked.connect(self._load_file)
         control_layout.addWidget(self._btn_load)
 
         self._btn_folder = QPushButton("打开会话文件夹")
         self._btn_folder.clicked.connect(self._open_sessions_folder)
-        control_layout.addWidget(self._btn_folder)
+        # 数据目录入口集中到“设置与诊断”；保留对象兼容旧调用。
+        self._btn_folder.setVisible(False)
 
         self._btn_sample = QPushButton("加载示例数据")
         self._btn_sample.clicked.connect(self._load_sample)
@@ -140,6 +145,13 @@ class ReplayPage(BasePage):
         self._btn_stop.clicked.connect(self._stop)
         control_layout.addWidget(self._btn_stop)
 
+        self._btn_clear = QPushButton("清除当前数据")
+        self._btn_clear.setObjectName("DangerButton")
+        self._btn_clear.setEnabled(False)
+        self._btn_clear.setToolTip("卸载当前回放数据并返回初始空状态")
+        self._btn_clear.clicked.connect(self._clear_data)
+        control_layout.addWidget(self._btn_clear)
+
         control_layout.addSpacing(20)
 
         control_layout.addWidget(QLabel("速度:"))
@@ -158,6 +170,14 @@ class ReplayPage(BasePage):
         control_card.add_widget(self._wrap(control_layout))
         top_layout.addWidget(control_card)
 
+        self._empty_label = QLabel("尚未加载回放数据。请选择会话 CSV，或显式加载示例数据。")
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setStyleSheet(
+            "color: #8491A5; font-size: 13px; padding: 8px; "
+            "border: 1px dashed #344056; border-radius: 6px;"
+        )
+        top_layout.addWidget(self._empty_label)
+
         # 进度条
         self._slider = QSlider(Qt.Horizontal)
         self._slider.setEnabled(False)
@@ -173,13 +193,13 @@ class ReplayPage(BasePage):
         charts_layout = QHBoxLayout()
         charts_layout.setSpacing(10)
 
-        eeg_card = Card("EEG回放")
+        eeg_card = Card("原始脑电回放")
         self._eeg_plot = EEGPlotWidget()
         self._eeg_plot.setMinimumHeight(180)
         eeg_card.add_widget(self._eeg_plot)
         charts_layout.addWidget(eeg_card, 1)
 
-        trend_card = Card("Attention / Meditation 回放")
+        trend_card = Card("专注度 / 放松度回放")
         self._trend_plot = TrendPlotWidget()
         self._trend_plot.setMinimumHeight(180)
         trend_card.add_widget(self._trend_plot)
@@ -212,14 +232,14 @@ class ReplayPage(BasePage):
 
         # 仪表
         gauge_row = QHBoxLayout()
-        att_card = Card("Attention")
-        self._att_gauge = ArcGauge("Attention", "#4FC3F7")
+        att_card = Card("专注度")
+        self._att_gauge = ArcGauge("专注度", "#4FC3F7")
         self._att_gauge.setFixedSize(120, 120)
         att_card.add_widget(self._wrap_centered(self._att_gauge))
         gauge_row.addWidget(att_card)
 
-        med_card = Card("Meditation")
-        self._med_gauge = ArcGauge("Meditation", "#4ADE80")
+        med_card = Card("放松度")
+        self._med_gauge = ArcGauge("放松度", "#4ADE80")
         self._med_gauge.setFixedSize(120, 120)
         med_card.add_widget(self._wrap_centered(self._med_gauge))
         gauge_row.addWidget(med_card)
@@ -231,7 +251,7 @@ class ReplayPage(BasePage):
         table_layout = QVBoxLayout()
         self._table = QTableWidget()
         self._table.setColumnCount(5)
-        self._table.setHorizontalHeaderLabels(["时间", "Raw", "Att", "Med", "预测"])
+        self._table.setHorizontalHeaderLabels(["时间", "原始脑电", "专注度", "放松度", "预测"])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
@@ -262,14 +282,17 @@ class ReplayPage(BasePage):
 
     def _load_file(self):
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "选择一个或多个会话CSV", "", "CSV Files (*.csv);;All Files (*)"
+            self,
+            "选择一个或多个会话 CSV（替换当前数据）",
+            str(self._sessions_dir()),
+            "CSV 文件 (*.csv);;所有文件 (*)",
         )
         if not paths:
             return
         self.load_paths(paths)
 
     def load_paths(self, paths):
-        """Load one session or a sequence of compatible session CSV files."""
+        """加载一个或多个兼容 CSV；每次调用都替换而不是追加。"""
         try:
             combined = []
             missing_predictions = False
@@ -284,7 +307,7 @@ class ReplayPage(BasePage):
             self._data = combined
             self._is_sample = False
             self._demo_label.setVisible(False)
-            self._label_file.setText(f"已加载 {len(paths)} 个文件，共 {len(self._data)} 行")
+            self._label_file.setText(f"已替换为 {len(paths)} 个文件，共 {len(self._data)} 行")
             self._init_playback()
             if missing_predictions:
                 QMessageBox.information(
@@ -295,8 +318,14 @@ class ReplayPage(BasePage):
         except Exception as e:
             QMessageBox.warning(self, "加载失败", f"无法加载文件：{e}")
 
+    def _sessions_dir(self) -> Path:
+        folder = Path(getattr(self.service, "sessions_dir", Path("data/sessions")))
+        if not folder.is_absolute():
+            folder = PACKAGE_ROOT / folder
+        return folder.resolve()
+
     def _open_sessions_folder(self):
-        folder = Path(getattr(self.service, "sessions_dir", Path("data/sessions"))).resolve()
+        folder = self._sessions_dir()
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
@@ -321,21 +350,61 @@ class ReplayPage(BasePage):
         self._data = list(reader)
         self._is_sample = True
         self._demo_label.setVisible(True)
-        self._label_file.setText(f"示例数据(演示) ({len(self._data)}行)")
+        self._label_file.setText(f"已替换为示例数据（演示），共 {len(self._data)} 行")
         self._init_playback()
 
     def _init_playback(self):
+        if not self._data:
+            self._clear_data()
+            return
         self._index = 0
+        self._empty_label.setVisible(False)
         self._slider.setEnabled(True)
         self._slider.setRange(0, len(self._data) - 1)
         self._slider.setValue(0)
         self._btn_play.setEnabled(True)
         self._btn_pause.setEnabled(False)
         self._btn_stop.setEnabled(False)
+        self._btn_clear.setEnabled(True)
         self._trend_plot.reset()
         self._update_frame(0)
         self._populate_table()
         self._update_dominant_state()
+
+    def _clear_data(self):
+        """卸载回放数据并恢复默认空状态。"""
+        self._playing = False
+        self._timer.stop()
+        self._data = []
+        self._index = 0
+        self._is_sample = False
+        self._demo_label.setVisible(False)
+        self._empty_label.setVisible(True)
+        self._label_file.setText("未加载文件")
+        self._label_progress.setText("0 / 0")
+        self._slider.blockSignals(True)
+        self._slider.setRange(0, 0)
+        self._slider.setValue(0)
+        self._slider.setEnabled(False)
+        self._slider.blockSignals(False)
+        self._btn_play.setEnabled(False)
+        self._btn_pause.setEnabled(False)
+        self._btn_stop.setEnabled(False)
+        self._btn_clear.setEnabled(False)
+        self._table.setRowCount(0)
+        self._trend_plot.reset()
+        if hasattr(self._eeg_plot, "_data"):
+            self._eeg_plot._data.fill(0)
+            self._eeg_plot._curve.setData(self._eeg_plot._x, self._eeg_plot._data)
+        self._att_gauge.set_value(0)
+        self._med_gauge.set_value(0)
+        for bar in self._prob_panel._bars.values():
+            bar.set_value(0.0)
+            bar.set_dimmed(True)
+        self._prob_panel._confidence_label.setText("信号质量：--")
+        self._prob_panel._warning_label.setVisible(False)
+        self._replay_pred.setText("预测状态：--")
+        self._replay_dominant.setText("整场主导状态（有效预测众数）：--")
 
     def _update_dominant_state(self):
         votes = []
@@ -459,7 +528,7 @@ class ReplayPage(BasePage):
         self._prob_panel._bars["negative"].set_value(ng)
         for bar in self._prob_panel._bars.values():
             bar.set_dimmed(False)
-        self._prob_panel._confidence_label.setText("回放模式 - 信号可信度: N/A")
+        self._prob_panel._confidence_label.setText("回放模式 · 信号可信度：原文件未提供")
         self._prob_panel._confidence_label.setStyleSheet(
             "font-size: 12px; color: #6B7689; padding-top: 4px;"
         )
