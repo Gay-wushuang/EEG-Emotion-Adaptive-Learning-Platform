@@ -9,7 +9,7 @@
 Live 测试中 patch 掉真正 socket/thread，不得要求测试环境连接真实 MindWave。
 
 运行方式（在 eeg_modular 目录下）：
-    E:\\anaconda3\\envs\\eegcnn\\python.exe -m pytest tests/test_mainwindow_modes.py -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_mainwindow_modes.py -v
 """
 
 import os
@@ -61,8 +61,8 @@ class TestMainWindowModes(unittest.TestCase):
             # 侧边栏版本标签：搜索所有子控件
             sidebar = self._find_sidebar(window, self.QWidget)
             sidebar_label_text = self._find_version_label(sidebar, self.QLabel)
-            self.assertIn("Mock", sidebar_label_text,
-                          f"Mock 模式侧边栏应标注 Mock模式，实际: '{sidebar_label_text}'")
+            self.assertIn("教学演示", sidebar_label_text)
+            self.assertNotIn("Mock", sidebar_label_text)
         finally:
             window.service.stop_streaming()
             window.close()
@@ -210,10 +210,10 @@ class TestMainWindowModes(unittest.TestCase):
                     hasattr(window.state, '_live_fallback_reason'),
                     "state 应记录回退原因"
                 )
-                # state.quality_level 应为 rejected
+                # 回退到独立教学演示后应立即提供可信演示状态。
                 self.assertEqual(
-                    window.state.quality_level, "rejected",
-                    "回退后 quality_level 应为 rejected"
+                    window.state.quality_level, "trusted",
+                    "回退后的教学演示数据应可直接解释"
                 )
                 # 侧边栏版本标签不应出现 "Live"
                 sidebar = self._find_sidebar(window, self.QWidget)
@@ -222,10 +222,7 @@ class TestMainWindowModes(unittest.TestCase):
                     "Live", sidebar_text,
                     f"回退后侧边栏不应显示 Live，实际: '{sidebar_text}'"
                 )
-                self.assertIn(
-                    "Mock", sidebar_text,
-                    f"回退后侧边栏应显示 Mock，实际: '{sidebar_text}'"
-                )
+                self.assertIn("教学演示", sidebar_text)
 
                 # 状态栏也不应出现 "Live · 真实EEG"
                 mode_label = window._sb_mode.text()
@@ -239,10 +236,8 @@ class TestMainWindowModes(unittest.TestCase):
                     self.app.processEvents()
                     time.sleep(0.05)
                 mode_label = window._sb_mode.text()
-                self.assertIn(
-                    "Mock", mode_label,
-                    f"回退后状态栏应包含 Mock，实际: '{mode_label}'"
-                )
+                self.assertIn("教学演示", mode_label)
+                self.assertNotIn("Mock", mode_label)
             finally:
                 window.service.stop_streaming()
                 window.close()
@@ -322,8 +317,8 @@ class TestMainWindowModes(unittest.TestCase):
                 mock_window.state.mode, "mock",
                 f"Mock 模式下 state.mode 应为 'mock'，实际: '{mock_window.state.mode}'"
             )
-            self.assertEqual(mock_window.state.connector_status, "offline")
-            self.assertEqual(mock_window.state.device_status, "offline")
+            self.assertEqual(mock_window.state.connector_status, "online")
+            self.assertEqual(mock_window.state.device_status, "online")
         finally:
             mock_window.service.stop_streaming()
             mock_window.close()
@@ -398,8 +393,8 @@ class TestMainWindowModes(unittest.TestCase):
                 svc._on_result(fake)
 
                 self.assertTrue(s._intervention_triggered)
-                self.assertEqual(s.task_difficulty, DIFFICULTY_MEDIUM,
-                                 "困难应降低为中等")
+                self.assertEqual(s.task_difficulty, DIFFICULTY_HARD,
+                                 "AI建议不得修改正式任务难度")
                 self.assertEqual(s.adaptive_action, AdaptiveAction.REDUCE_DIFFICULTY)
                 self.assertIsNotNone(s.adaptive_action_time)
 
@@ -492,10 +487,7 @@ class TestMainWindowModes(unittest.TestCase):
                     "Mock", mode_label,
                     f"Live 状态栏不应包含 Mock，实际: '{mode_label}'"
                 )
-                self.assertIn(
-                    "Live", mode_label,
-                    f"Live 状态栏应包含 Live，实际: '{mode_label}'"
-                )
+                self.assertIn("实时采集", mode_label)
             finally:
                 window.service.stop_streaming()
                 window.close()
@@ -531,10 +523,7 @@ class TestMainWindowModes(unittest.TestCase):
             self.app.processEvents()
 
             mode_label = window._sb_mode.text()
-            self.assertIn(
-                "Mock", mode_label,
-                f"Mock 状态栏应包含 Mock，实际: '{mode_label}'"
-            )
+            self.assertIn("教学演示", mode_label)
             self.assertNotIn(
                 "Live", mode_label,
                 f"Mock 状态栏不应包含 Live，实际: '{mode_label}'"

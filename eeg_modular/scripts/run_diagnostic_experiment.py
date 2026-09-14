@@ -13,6 +13,12 @@ from pathlib import Path
 from mark_five_stage_experiment import CHANGED_ORDER_STAGES, ORIGINAL_STAGES
 
 
+ROOT = Path(__file__).resolve().parents[1]
+CAPTURE_SCRIPT = ROOT / "realtime_inference" / "tools" / "capture_mindwave_csv.py"
+MARKER_SCRIPT = ROOT / "scripts" / "mark_five_stage_experiment.py"
+VALIDATION_SCRIPT = ROOT / "scripts" / "validate_experiment_run.py"
+
+
 def read_status(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -39,7 +45,11 @@ def main() -> None:
     parser.add_argument("--duration-scale", type=float, default=1.0)
     parser.add_argument("--smoke-stage-seconds", type=int)
     parser.add_argument("--run-id")
-    parser.add_argument("--output-dir", type=Path, default=Path("realtime_inference/captures"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=ROOT / "realtime_inference" / "captures",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=13854)
     parser.add_argument("--post-end-buffer", type=float, default=30.0)
@@ -71,7 +81,7 @@ def main() -> None:
 
     capture_command = [
         sys.executable,
-        "realtime_inference/tools/capture_mindwave_csv.py",
+        str(CAPTURE_SCRIPT),
         "--host", args.host,
         "--port", str(args.port),
         "--wait-for-raw-timeout", str(args.wait_for_raw_timeout),
@@ -84,12 +94,12 @@ def main() -> None:
     ]
     print(f"run_id={run_id}")
     print(f"dynamic_max_duration_seconds={max_duration:.1f}")
-    capture_process = subprocess.Popen(capture_command)
+    capture_process = subprocess.Popen(capture_command, cwd=ROOT)
     try:
         wait_ready(status, run_id, args.wait_for_raw_timeout + 10)
         marker_command = [
             sys.executable,
-            "scripts/mark_five_stage_experiment.py",
+            str(MARKER_SCRIPT),
             "--order", args.order,
             "--output", str(events),
             "--run-id", run_id,
@@ -100,7 +110,7 @@ def main() -> None:
             marker_command.extend(
                 ["--smoke-stage-seconds", str(args.smoke_stage_seconds)]
             )
-        marker_result = subprocess.run(marker_command, check=False)
+        marker_result = subprocess.run(marker_command, check=False, cwd=ROOT)
         if marker_result.returncode != 0:
             raise RuntimeError(
                 f"Experiment program exited with code {marker_result.returncode}"
@@ -111,13 +121,14 @@ def main() -> None:
         validation = subprocess.run(
             [
                 sys.executable,
-                "scripts/validate_experiment_run.py",
+                str(VALIDATION_SCRIPT),
                 "--capture", str(capture),
                 "--events", str(events),
                 "--diagnostics", str(diagnostics),
                 "--output", str(coverage),
             ],
             check=False,
+            cwd=ROOT,
         )
         if validation.returncode != 0:
             raise RuntimeError("Coverage validation: incomplete")

@@ -60,6 +60,10 @@ class EEGPlotWidget(QWidget):
         self._data[-1] = value
         self._curve.setData(self._x, self._data)
 
+    def reset(self):
+        self._data = np.zeros(self.DISPLAY_POINTS, dtype=np.float32)
+        self._curve.setData(self._x, self._data)
+
     def push_buffer(self, buffer):
         """直接用 deque/list 替换全部数据。"""
         arr = np.asarray(buffer, dtype=np.float32)[-(512 * self.DISPLAY_SECONDS):]
@@ -79,6 +83,25 @@ class EEGPlotWidget(QWidget):
         robust_peak = float(np.nanpercentile(np.abs(arr), 99)) if arr.size else 0.0
         target_scale = float(np.clip(robust_peak * 1.25, 100.0, 1000.0))
         self._scale = 0.90 * self._scale + 0.10 * target_scale
+        self._plot.setYRange(-self._scale, self._scale, padding=0.02)
+        self._curve.setData(self._x, self._data)
+
+    def push_display_points(self, points):
+        """Stretch an already-downsampled remote snapshot across the viewport."""
+        arr = np.asarray(points, dtype=np.float32)
+        if not arr.size:
+            return
+        arr = arr - float(np.median(arr))
+        if arr.size == 1:
+            display = np.full(self.DISPLAY_POINTS, arr[0], dtype=np.float32)
+        else:
+            display = np.interp(
+                np.linspace(0.0, 1.0, self.DISPLAY_POINTS),
+                np.linspace(0.0, 1.0, arr.size), arr,
+            ).astype(np.float32)
+        self._data = display
+        robust_peak = float(np.percentile(np.abs(display), 99))
+        self._scale = float(np.clip(robust_peak * 1.25, 100.0, 1000.0))
         self._plot.setYRange(-self._scale, self._scale, padding=0.02)
         self._curve.setData(self._x, self._data)
 

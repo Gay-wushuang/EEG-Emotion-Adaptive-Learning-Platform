@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from pages.base_page import BasePage
 from widgets.card import Card
+from services.identity_store import ROLE_STUDENT, role_for_user_id
 
 
 class HistoryPage(BasePage):
@@ -30,7 +31,7 @@ class HistoryPage(BasePage):
 
     def _build_ui(self):
         # 仅在当前结果包含 Mock/演示记录时显示，正式历史默认无横幅。
-        self._demo_banner = QLabel("当前包含 Mock 演示记录，与正式数据分开保存")
+        self._demo_banner = QLabel("当前显示教学演示记录，与正式学习记录分开保存")
         self._demo_banner.setStyleSheet(
             "background-color: #1B2534; border: 1px solid #303C50; "
             "color: #AAB5C5; font-size: 13px; font-weight: 500; "
@@ -57,6 +58,13 @@ class HistoryPage(BasePage):
         self._combo_sort.addItems(["按时间倒序", "按时长排序", "按信号质量排序"])
         self._combo_sort.currentIndexChanged.connect(self._refresh_table)
         filter_layout.addWidget(self._combo_sort, 1)
+        filter_layout.addWidget(QLabel("数据来源:"))
+        self._combo_source = QComboBox()
+        self._combo_source.addItem("全部", "all")
+        self._combo_source.addItem("实时采集", "live")
+        self._combo_source.addItem("教学演示", "mock")
+        self._combo_source.currentIndexChanged.connect(self._refresh_table)
+        filter_layout.addWidget(self._combo_source, 1)
         filter_card.add_widget(self._wrap(filter_layout))
         left_layout.addWidget(filter_card)
 
@@ -204,6 +212,22 @@ class HistoryPage(BasePage):
     def _get_sorted_sessions(self):
         """获取排序后的会话列表（从 _history_sessions 读取）。"""
         sessions = list(self.state._history_sessions)
+        role = str(getattr(self.state, "current_role", "research") or "research")
+        if role == "student":
+            current_user = str(getattr(self.state, "_user_id", "") or "")
+            sessions = [item for item in sessions if item.user_id == current_user]
+        elif role == "teacher":
+            def is_student_record(item):
+                try:
+                    return role_for_user_id(item.user_id) == ROLE_STUDENT
+                except ValueError:
+                    # Legacy records predate fixed prefixes and remain visible
+                    # as local student learning data.
+                    return True
+            sessions = [item for item in sessions if is_student_record(item)]
+        source_filter = self._combo_source.currentData()
+        if source_filter in {"live", "mock"}:
+            sessions = [item for item in sessions if item.source == source_filter]
         sort_idx = self._combo_sort.currentIndex()
         if sort_idx == 1:
             sessions.sort(key=lambda s: s.duration_seconds, reverse=True)
@@ -227,7 +251,7 @@ class HistoryPage(BasePage):
             self._table.setItem(i, 4, QTableWidgetItem(f"{s.signal_quality*100:.0f}%"))
             self._table.setItem(i, 5, QTableWidgetItem(str(s.event_count)))
 
-            source_names = {"live": "Live", "mock": "Mock 演示", "replay": "Replay"}
+            source_names = {"live": "实时采集", "mock": "教学演示", "replay": "离线回放"}
             demo_item = QTableWidgetItem(source_names.get(s.source, s.source or "--"))
             if s.demo:
                 demo_item.setForeground(QColor("#FBBF24"))
@@ -249,7 +273,7 @@ class HistoryPage(BasePage):
 
         self._detail_labels["session_id"].setText(s.session_id)
         self._detail_labels["source"].setText(
-            {"live": "Live 真实采集", "mock": "Mock 演示", "replay": "Replay 回放"}.get(
+            {"live": "实时采集", "mock": "教学演示数据", "replay": "离线数据回放"}.get(
                 s.source, s.source or "--"
             )
         )
@@ -304,7 +328,8 @@ class HistoryPage(BasePage):
                 "avg_attention", "avg_meditation", "signal_quality",
                 "task_count", "event_count", "notes",
             ])
-            for s in self.state._history_sessions:
+            visible_sessions = self._get_sorted_sessions()
+            for s in visible_sessions:
                 writer.writerow([
                     s.session_id, s.source, s.demo, s.status, s.user_id,
                     s.start_time, s.end_time, s.duration_seconds,
@@ -314,7 +339,7 @@ class HistoryPage(BasePage):
                 ])
         QMessageBox.information(
             self, "导出成功",
-            f"已导出 {len(self.state._history_sessions)} 条记录。"
+            f"已导出 {len(visible_sessions)} 条记录。"
         )
 
     def _open_sessions_folder(self):
@@ -324,7 +349,7 @@ class HistoryPage(BasePage):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def on_show(self):
-        # Mock records are visible only in Mock mode.  Live/Replay defaults to
-        # formal records, preventing demo history from contaminating reports.
-        self.state.reload_history(include_demo=self.state.mode == "mock")
+        # The explicit source selector owns presentation filtering. Loading all
+        # records here keeps the list stable when a detail row is selected.
+        self.state.reload_history(include_demo=True)
         self._refresh_table()

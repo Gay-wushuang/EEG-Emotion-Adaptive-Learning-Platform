@@ -307,10 +307,10 @@ integration/codex     # Codex集成
 
 ### 开发入口
 
-当前Python环境优先使用：
+当前Python环境优先使用项目本地虚拟环境：
 
 ```powershell
-E:\anaconda3\envs\eegcnn\python.exe
+.venv\Scripts\python.exe
 ```
 
 Agent不得擅自升级PyTorch、NumPy、SciPy或scikit-learn。新增UI依赖前先检查是否已安装，并把最终版本写入锁定文件。

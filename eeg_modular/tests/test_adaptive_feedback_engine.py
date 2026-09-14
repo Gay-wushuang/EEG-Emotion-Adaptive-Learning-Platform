@@ -8,7 +8,7 @@ D. Live 服务测试（真正实例化 LiveDataService + fake InferenceResult）
 E. Reset 测试
 
 运行方式（在 eeg_modular 目录下）：
-    E:\\anaconda3\\envs\\eegcnn\\python.exe -m unittest tests.test_adaptive_feedback_engine -v
+    .venv\\Scripts\\python.exe -m unittest tests.test_adaptive_feedback_engine -v
 """
 
 import os
@@ -110,8 +110,8 @@ class TestAdaptiveFeedbackEngine(unittest.TestCase):
         self.assertEqual(decision.action, AdaptiveAction.REDUCE_DIFFICULTY)
         self.assertEqual(decision.new_difficulty, DIFFICULTY_MEDIUM)
         self.assertTrue(decision.should_emit_event)
-        self.assertIn("困难", decision.feedback_text)
-        self.assertIn("中等", decision.feedback_text)
+        self.assertIn("建议", decision.feedback_text)
+        self.assertIn("保持不变", decision.feedback_text)
 
     # ── A2: medium → easy ──
     def test_A2_medium_to_easy(self):
@@ -125,8 +125,8 @@ class TestAdaptiveFeedbackEngine(unittest.TestCase):
 
         self.assertEqual(decision.action, AdaptiveAction.REDUCE_DIFFICULTY)
         self.assertEqual(decision.new_difficulty, DIFFICULTY_EASY)
-        self.assertIn("中等", decision.feedback_text)
-        self.assertIn("简单", decision.feedback_text)
+        self.assertIn("建议", decision.feedback_text)
+        self.assertNotIn("已从", decision.feedback_text)
 
     # ── A3: easy → suggest_break ──
     def test_A3_easy_to_suggest_break(self):
@@ -414,7 +414,7 @@ class TestMockIntegration(unittest.TestCase):
         self.app = QApplication.instance() or QApplication(sys.argv)
 
     def test_C1_mock_sustained_decision_shared_engine(self):
-        """Mock sustained decision → shared engine → DashboardState → difficulty changed。"""
+        """Mock sustained decision produces advice without changing difficulty。"""
         state = DashboardState()
         state.warmup_progress = 1.0
         state.quality_level = "trusted"
@@ -450,7 +450,7 @@ class TestMockIntegration(unittest.TestCase):
         apply_adaptive_decision(state, decision)
 
         # 验证 DashboardState 已更新
-        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM)
+        self.assertEqual(state.task_difficulty, DIFFICULTY_HARD)
         self.assertEqual(state.adaptive_action, AdaptiveAction.REDUCE_DIFFICULTY)
         self.assertIsNotNone(state.adaptive_action_time)
         interventions = [e for e in state._events if e.category == "intervention"]
@@ -489,14 +489,14 @@ class TestMockIntegration(unittest.TestCase):
         state.task_difficulty = DIFFICULTY_HARD
         d1 = _trigger(engine, DIFFICULTY_HARD, time.time())
         apply_adaptive_decision(state, d1)
-        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM)
+        self.assertEqual(state.task_difficulty, DIFFICULTY_HARD)
         self.assertEqual(state.adaptive_action, AdaptiveAction.REDUCE_DIFFICULTY)
 
         # 第二次: medium → easy（跨越 cooldown）
         state.task_difficulty = DIFFICULTY_MEDIUM
         d2 = _trigger(engine, DIFFICULTY_MEDIUM, time.time() + 100)
         apply_adaptive_decision(state, d2)
-        self.assertEqual(state.task_difficulty, DIFFICULTY_EASY)
+        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM)
 
         # 第三次: easy → suggest_break
         state.task_difficulty = DIFFICULTY_EASY
@@ -548,8 +548,8 @@ class TestMockIntegration(unittest.TestCase):
 
         self.assertTrue(state._intervention_triggered,
                         "Mock 路径应通过 _update_stable_state 触发干预")
-        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM,
-                         "困难应降低为中等")
+        self.assertEqual(state.task_difficulty, DIFFICULTY_HARD,
+                         "AI建议不得修改正式任务难度")
         self.assertEqual(state.adaptive_action, AdaptiveAction.REDUCE_DIFFICULTY)
         interventions = [e for e in state._events if e.category == "intervention"]
         self.assertGreaterEqual(len(interventions), 1,
@@ -652,12 +652,12 @@ class TestLiveServiceIntegration(unittest.TestCase):
 
         self.assertTrue(state._intervention_triggered,
                         "accepted=True + negative high 应触发干预")
-        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM,
-                         "困难应降低为中等")
+        self.assertEqual(state.task_difficulty, DIFFICULTY_HARD,
+                         "AI建议不得修改正式任务难度")
         self.assertEqual(state.adaptive_action, AdaptiveAction.REDUCE_DIFFICULTY)
         self.assertIsNotNone(state.adaptive_action_time)
-        self.assertIn("困难", state.adaptive_feedback_text)
-        self.assertIn("中等", state.adaptive_feedback_text)
+        self.assertIn("建议", state.adaptive_feedback_text)
+        self.assertIn("保持不变", state.adaptive_feedback_text)
 
         interventions = [e for e in state._events if e.category == "intervention"]
         self.assertEqual(len(interventions), 1,

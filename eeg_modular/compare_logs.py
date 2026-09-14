@@ -1,7 +1,12 @@
 
+import argparse
 import re
 import datetime
 from collections import defaultdict
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
 
 def parse_python_log(log_path):
     """解析 Python 日志"""
@@ -119,8 +124,20 @@ def find_matches(python_data, unity_data, threshold=0.1):
     return matches, mismatches
 
 def main():
-    python_path = r'd:\proegg\eeg_modular\realtime_inference\log.txt'
-    unity_path = r'd:\proegg\eeg_modular\aa.txt'
+    parser = argparse.ArgumentParser(description="比较 Python 与 Unity 推理日志")
+    parser.add_argument(
+        "--python-log",
+        type=Path,
+        default=ROOT / "realtime_inference" / "log.txt",
+    )
+    parser.add_argument(
+        "--unity-log",
+        type=Path,
+        default=ROOT / "aa.txt",
+    )
+    args = parser.parse_args()
+    python_path = args.python_log
+    unity_path = args.unity_log
     
     print("正在解析 Python 日志...")
     python_data = parse_python_log(python_path)

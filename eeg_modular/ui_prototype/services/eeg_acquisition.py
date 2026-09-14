@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import math
-import random
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -93,11 +92,11 @@ class EEGAcquisitionWorker(QThread):
 
         # Mock模式：明确报告未连接
         self.status_changed.emit({
-            "connector_status": "offline",
-            "device_status": "offline",
+            "connector_status": "online",
+            "device_status": "online",
             "mode": "mock",
             "data_source": "mock",
-            "note": "Mock模式 - 未接入真实设备",
+            "note": "教学演示数据已就绪（未接入真实设备）",
         })
 
         while self._running:
@@ -112,7 +111,7 @@ class EEGAcquisitionWorker(QThread):
             raw_val = int(
                 400 * math.sin(t * 8.0)
                 + 150 * math.sin(t * 23.0)
-                + random.gauss(0, 80)
+                + 60 * math.sin(t * 37.0)
             )
 
             snap = EEGSnapshot(
@@ -176,7 +175,7 @@ from services.dashboard_state import MOCK_UI_REFRESH_HZ
 
 
 class _MockSimState:
-    """Mock信号状态机，生成有节律变化的注意力/冥想/频带功率。"""
+    """Deterministic six-stage teaching-demo trajectory."""
 
     def __init__(self):
         self.t = 0.0
@@ -184,52 +183,34 @@ class _MockSimState:
         self.meditation = 50
         self.poor_signal = 0
         self.powers = [0] * 8
-        self._poor_timer = 0.0
-        self._phase = 0  # 0=正常, 1=信号波动, 2=短暂掉线
         self._emotion_trend = 0  # 0=positive 1=neutral 2=negative
 
     def advance(self, t: float):
         self.t = t
 
-        # 模拟情绪趋势周期：约120秒
-        cycle = (t % 120.0) / 120.0
-        if cycle < 0.35:
-            self._emotion_trend = 0
-        elif cycle < 0.70:
-            self._emotion_trend = 1
-        else:
-            self._emotion_trend = 2
-
-        base_att = [70, 60, 38][self._emotion_trend]
-        base_med = [65, 52, 35][self._emotion_trend]
-        self.attention = int(np.clip(
-            base_att + 10 * math.sin(t / 12.0) + random.gauss(0, 3), 0, 100))
-        self.meditation = int(np.clip(
-            base_med + 12 * math.sin(t / 15.0 + 1.5) + random.gauss(0, 3), 0, 100))
+        cycle = t % 80.0
+        if cycle < 10:       # A. 稳定进入
+            base_att, base_med, self._emotion_trend = 56 + cycle * 0.5, 52, 1
+        elif cycle < 25:     # B. 专注逐步提升
+            base_att, base_med, self._emotion_trend = 61 + (cycle - 10) * 1.0, 58, 0
+        elif cycle < 35:     # C. 学习负荷逐步增加
+            base_att, base_med, self._emotion_trend = 76 - (cycle - 25) * 3.6, 56 - (cycle - 25), 2
+        elif cycle < 60:     # D. 持续低专注，覆盖20秒真实建议门槛
+            base_att, base_med, self._emotion_trend = 38, 40, 2
+        else:                # E. 调整节奏后恢复
+            base_att, base_med, self._emotion_trend = 40 + (cycle - 60) * 1.8, 42 + (cycle - 60), 1
+        self.attention = int(np.clip(base_att + 2 * math.sin(t / 5.0), 0, 100))
+        self.meditation = int(np.clip(base_med + 2 * math.sin(t / 7.0), 0, 100))
 
         amp_mult = [1.1, 1.0, 0.7][self._emotion_trend]
         bases = [50000, 40000, 30000, 25000, 20000, 18000, 15000, 12000]
         amps = [20000, 15000, 12000, 10000, 8000, 7000, 6000, 5000]
         self.powers = [
-            int(max(0, b + a * amp_mult * math.sin(t / (14.0 + i)) + random.gauss(0, 500)))
+            int(max(0, b + a * amp_mult * math.sin(t / (14.0 + i))))
             for i, (b, a) in enumerate(zip(bases, amps))
         ]
 
-        self._poor_timer += 0.1
-        if self._poor_timer > 25 + random.uniform(0, 15):
-            self._phase = random.choice([1, 1, 2])
-            self._poor_timer = 0.0
-
-        if self._phase == 0:
-            self.poor_signal = random.choice([0, 0, 0, 0, 0, 0, 0, 0, 0, 25])
-        elif self._phase == 1:
-            self.poor_signal = random.randint(40, 80)
-            if random.random() < 0.3:
-                self._phase = 0
-        elif self._phase == 2:
-            self.poor_signal = 200
-            if random.random() < 0.2:
-                self._phase = 0
+        self.poor_signal = 0 if int(t) % 24 else 20
 
     @property
     def emotion_trend(self) -> int:

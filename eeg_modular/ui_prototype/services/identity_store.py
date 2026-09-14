@@ -16,14 +16,29 @@ from typing import Dict, List, Optional
 ROLE_STUDENT = "student"
 ROLE_TEACHER = "teacher"
 ROLE_RESEARCH = "research"
+ROLE_ADMIN = ROLE_RESEARCH  # Compatibility alias; persisted value remains "research".
 VALID_ROLES = (ROLE_STUDENT, ROLE_TEACHER, ROLE_RESEARCH)
 ROLE_LABELS = {
-    ROLE_STUDENT: "学习端",
-    ROLE_TEACHER: "教学端",
-    ROLE_RESEARCH: "管理 / 研究端",
+    ROLE_STUDENT: "学生端",
+    ROLE_TEACHER: "教师端",
+    ROLE_RESEARCH: "管理端",
 }
 
 _USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{2,32}$")
+
+
+def role_for_user_id(user_id: str) -> str:
+    """Return the immutable role encoded by a local test-account prefix."""
+    value = str(user_id or "").strip().lower()
+    if value.startswith("st_"):
+        return ROLE_STUDENT
+    if value.startswith(("teacher", "tc_")):
+        return ROLE_TEACHER
+    if value.startswith("admin_"):
+        return ROLE_RESEARCH
+    raise ValueError(
+        "账号 ID 必须以 st_、teacher、tc_ 或 admin_ 开头，角色由账号自动确定。"
+    )
 
 
 def default_identity_path() -> Path:
@@ -74,9 +89,10 @@ class IdentityStore:
                 )
             except ValueError:
                 continue
-            role = str(profile.get("last_role", ROLE_STUDENT))
-            if role not in VALID_ROLES:
-                role = ROLE_STUDENT
+            try:
+                role = role_for_user_id(user_id)
+            except ValueError:
+                continue
             cleaned.append({"user_id": user_id, "name": name, "last_role": role})
 
         last_user_id = raw.get("last_user_id") if isinstance(raw, dict) else None
@@ -110,16 +126,17 @@ class IdentityStore:
         self,
         user_id: str,
         name: str,
-        role: str = ROLE_STUDENT,
+        role: Optional[str] = None,
         *,
         make_current: bool = True,
     ) -> Dict[str, str]:
         user_id, name = self.validate(user_id, name)
-        if role not in VALID_ROLES:
-            raise ValueError("未知的系统角色。")
+        fixed_role = role_for_user_id(user_id)
+        if role is not None and role != fixed_role:
+            raise ValueError("账号角色由 ID 前缀固定，不能修改。")
 
         data = self._load()
-        profile = {"user_id": user_id, "name": name, "last_role": role}
+        profile = {"user_id": user_id, "name": name, "last_role": fixed_role}
         profiles = data["profiles"]
         for index, existing in enumerate(profiles):
             if existing["user_id"] == user_id:

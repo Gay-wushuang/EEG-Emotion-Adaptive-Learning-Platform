@@ -1,0 +1,3 @@
+# Frozen production assets are checksum-verified byte-for-byte at runtime.
+# Never let Git rewrite their line endings on checkout or commit.
+eeg_modular/production_baseline_v1/** -text

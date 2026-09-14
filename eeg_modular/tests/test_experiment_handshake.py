@@ -5,7 +5,11 @@ import importlib.util
 import json
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ModuleNotFoundError:  # optional experiment-tool test dependency
+    import unittest
+    raise unittest.SkipTest("pytest is not installed in the product runtime environment")
 
 
 ROOT = Path(__file__).resolve().parents[1]

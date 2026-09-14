@@ -7,11 +7,14 @@ DashboardState 正式字段接口。UI 业务逻辑只消费正式字段，
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import time
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QInputDialog,
     QMessageBox, QFileDialog, QComboBox, QGridLayout, QFrame,
+    QDialog, QListWidget, QLineEdit,
 )
 
 from pages.base_page import BasePage
@@ -27,6 +30,11 @@ from services.dashboard_state import (
     DIFFICULTY_EASY, DIFFICULTY_MEDIUM, DIFFICULTY_HARD,
     DIFFICULTY_DISPLAY,
 )
+from services.learning_readiness import learning_start_block_reason
+from services.identity_store import IdentityStore
+from services.teaching_store import (
+    StudentRuntimeRegistry, TeacherSelectionContext, TeacherStudentStore,
+)
 
 
 LEARNER_TASK_TYPES = [
@@ -37,13 +45,34 @@ _DIFFICULTY_VALUES = [DIFFICULTY_EASY, DIFFICULTY_MEDIUM, DIFFICULTY_HARD]
 
 
 class DashboardPage(BasePage):
-    def __init__(self, state, service):
+    MANAGE_STUDENTS_DIALOG_STYLE = (
+        "QDialog { background: #161D2A; color: #E8EDF3; }"
+        "QLabel { color: #E8EDF3; font-size: 13px; }"
+        "QListWidget, QLineEdit { background: #222B3A; color: #F3F6FA; "
+        "border: 1px solid #3B475B; border-radius: 4px; padding: 6px; }"
+        "QLineEdit { selection-background-color: #2563EB; }"
+        "QListWidget::item:selected { background: #2563EB; color: white; }"
+        "QPushButton { background: #263449; color: #E8EDF3; border: 1px solid #41516A; "
+        "border-radius: 4px; padding: 6px 12px; }"
+        "QPushButton:hover { background: #31425C; }"
+    )
+    def __init__(self, state, service, *, binding_store=None, runtime_registry=None,
+                 identity_store=None, selection_context=None):
         self.state = state
         self.service = service
+        self.identity_store = identity_store or IdentityStore()
+        self.binding_store = binding_store or TeacherStudentStore(
+            identity_store=self.identity_store
+        )
+        self.runtime_registry = runtime_registry or StudentRuntimeRegistry.shared()
+        self.selection_context = selection_context or TeacherSelectionContext.shared()
         self._session_started = False
         self._session_paused = False
         self._syncing_role_controls = False
         super().__init__(scrollable=True)
+        self._teacher_poll_timer = QTimer(self)
+        self._teacher_poll_timer.setInterval(500)
+        self._teacher_poll_timer.timeout.connect(self._poll_teacher_runtime)
         self._build_ui()
         self.set_role(self._role)
 
@@ -54,8 +83,20 @@ class DashboardPage(BasePage):
         # ── 标题行 ──
         header = QHBoxLayout()
         title = QLabel("实时学习仪表盘")
+        self._page_title = title
         title.setObjectName("PageTitle")
         header.addWidget(title)
+
+        self._teacher_student_label = QLabel("当前观察学生：")
+        self._teacher_student_combo = QComboBox()
+        self._teacher_student_combo.currentIndexChanged.connect(
+            self._on_teacher_student_changed
+        )
+        self._btn_manage_students = QPushButton("管理学生")
+        self._btn_manage_students.clicked.connect(self._manage_students)
+        header.addWidget(self._teacher_student_label)
+        header.addWidget(self._teacher_student_combo)
+        header.addWidget(self._btn_manage_students)
 
         self._session_time = QLabel("会话时间 00:00")
         self._session_time.setObjectName("AccentLabel")
@@ -64,6 +105,12 @@ class DashboardPage(BasePage):
         header.addStretch()
         header.addWidget(self._session_time)
         layout.addLayout(header)
+        self._diagnostic_note = QLabel(
+            "本机 EEG 数据仅用于设备与模型诊断，不计入任何学生学习记录。"
+        )
+        self._diagnostic_note.setStyleSheet("color: #FBBF24; font-size: 12px;")
+        self._diagnostic_note.setVisible(False)
+        layout.addWidget(self._diagnostic_note)
 
         # ── 第一行：5个状态卡片 ──
         status_row = QHBoxLayout()
@@ -276,7 +323,9 @@ class DashboardPage(BasePage):
         self._btn_pause.clicked.connect(self._on_pause)
         btn_row.addWidget(self._btn_pause)
 
-        self._btn_event = QPushButton("事件标记")
+        # Explicit parent is required because this compatibility button is not
+        # inserted into the toolbar layout; otherwise it becomes a stray top-level window.
+        self._btn_event = QPushButton("事件标记", toolbar)
         self._btn_event.setEnabled(False)
         self._btn_event.clicked.connect(self._on_event)
         # 详细事件统一在“任务与事件”页管理；保留属性兼容旧调用。
@@ -336,22 +385,232 @@ class DashboardPage(BasePage):
         if not hasattr(self, "_role_card"):
             return
         is_student = self._role == "student"
+        teacher = self._role == "teacher"
+        self._teacher_student_label.setVisible(teacher)
+        self._teacher_student_combo.setVisible(teacher)
+        self._btn_manage_students.setVisible(teacher)
         self._learner_task.setVisible(is_student)
         self._learner_difficulty.setVisible(is_student)
         self._focus_values[0].setVisible(not is_student)
         self._focus_values[2].setVisible(not is_student)
         if is_student:
-            self._role_card.set_title("学习端 · 当前学习安排")
+            self._page_title.setText("实时学习仪表盘")
+            self._diagnostic_note.setVisible(False)
+            self._card_poor["frame"].set_title("接触质量")
+            self._btn_start.setText("开始学习记录")
+            self._role_card.set_title("学生端 · 当前学习安排")
             titles = ["学习任务", "当前建议", "难度调整"]
-        elif self._role == "teacher":
-            self._role_card.set_title("教学端 · 班级过程概览")
+        elif teacher:
+            self._page_title.setText("学生实时观察")
+            self._diagnostic_note.setVisible(False)
+            self._card_poor["frame"].set_title("接触质量")
+            self._role_card.set_title("教师端 · 学生过程概览")
             titles = ["班级状态趋势", "异常提醒", "过程记录"]
         else:
-            self._role_card.set_title("管理 / 研究端 · 运行概览")
+            self._page_title.setText("本机设备与模型诊断")
+            self._diagnostic_note.setVisible(True)
+            self._card_poor["frame"].set_title("Poor Signal 原始值")
+            self._btn_start.setText("开始本机诊断记录")
+            self._role_card.set_title("管理端 · 运行概览")
             titles = ["设备", "模型与数据质量", "实验记录"]
+        can_control = self._role != "teacher"
+        for button in (
+            self._btn_start, self._btn_pause, self._btn_end,
+        ):
+            button.setVisible(can_control)
+        self._btn_event.setVisible(False)
         for label, text in zip(self._focus_keys, titles):
             label.setText(text)
         self._refresh_role_focus(self.state)
+        if teacher:
+            self.selection_context.set_teacher(getattr(self.state, "_user_id", ""))
+            self._teacher_poll_timer.start()
+            self._refresh_teacher_students()
+            self._update_teacher_snapshot()
+        else:
+            self._teacher_poll_timer.stop()
+
+    def _poll_teacher_runtime(self):
+        if self._role == "teacher":
+            self._refresh_teacher_students()
+            self._update_teacher_snapshot()
+
+    def _refresh_teacher_students(self):
+        teacher_id = getattr(self.state, "_user_id", "")
+        current = (
+            self.selection_context.selected_student_id
+            or self._teacher_student_combo.currentData()
+        )
+        try:
+            names = {item["user_id"]: item["name"] for item in self.identity_store.list_profiles()}
+        except OSError:
+            names = {}
+        students = self.binding_store.students_for(teacher_id)
+        existing = [self._teacher_student_combo.itemData(i)
+                    for i in range(self._teacher_student_combo.count())]
+        if [""] + students == existing:
+            index = self._teacher_student_combo.findData(current)
+            if index >= 0 and index != self._teacher_student_combo.currentIndex():
+                self._teacher_student_combo.blockSignals(True)
+                self._teacher_student_combo.setCurrentIndex(index)
+                self._teacher_student_combo.blockSignals(False)
+            return
+        self._teacher_student_combo.blockSignals(True)
+        self._teacher_student_combo.clear()
+        self._teacher_student_combo.addItem("请选择学生", "")
+        for student_id in students:
+            self._teacher_student_combo.addItem(
+                f"{names.get(student_id, '')} {student_id}".strip(), student_id
+            )
+        index = self._teacher_student_combo.findData(current)
+        self._teacher_student_combo.setCurrentIndex(max(0, index))
+        self._teacher_student_combo.blockSignals(False)
+
+    def _on_teacher_student_changed(self, index):
+        if self._role == "teacher":
+            self.selection_context.select(self._teacher_student_combo.currentData() or "")
+            self._update_teacher_snapshot()
+
+    def _manage_students(self):
+        if self._role != "teacher":
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("管理学生")
+        dialog.setStyleSheet(self.MANAGE_STUDENTS_DIALOG_STYLE)
+        layout = QVBoxLayout(dialog)
+        students = QListWidget()
+        layout.addWidget(QLabel("我的学生"))
+        layout.addWidget(students)
+        entry = QLineEdit()
+        entry.setPlaceholderText("学生 ID，例如 st_001")
+        layout.addWidget(entry)
+        buttons = QHBoxLayout()
+        add_button = QPushButton("添加学生")
+        remove_button = QPushButton("移除选中绑定")
+        close_button = QPushButton("关闭")
+        buttons.addWidget(add_button)
+        buttons.addWidget(remove_button)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        teacher_id = getattr(self.state, "_user_id", "")
+
+        def refresh():
+            students.clear()
+            try:
+                names = {item["user_id"]: item["name"] for item in self.identity_store.list_profiles()}
+            except OSError:
+                names = {}
+            for student_id in self.binding_store.students_for(teacher_id):
+                students.addItem(f"{names.get(student_id, '')} {student_id}".strip())
+
+        def add():
+            student_id = entry.text().strip()
+            try:
+                added = self.binding_store.add(teacher_id, student_id)
+            except ValueError as exc:
+                QMessageBox.warning(dialog, "无法添加学生", str(exc))
+                return
+            if not added:
+                QMessageBox.information(dialog, "提示", "该学生已经添加")
+                return
+            entry.clear()
+            refresh()
+            self._refresh_teacher_students()
+
+        def remove():
+            item = students.currentItem()
+            if not item:
+                return
+            student_id = item.text().split()[-1]
+            self.binding_store.remove(teacher_id, student_id)
+            refresh()
+            self._refresh_teacher_students()
+
+        add_button.clicked.connect(add)
+        remove_button.clicked.connect(remove)
+        close_button.clicked.connect(dialog.accept)
+        refresh()
+        dialog.exec()
+
+    def _update_teacher_snapshot(self):
+        student_id = self.selection_context.selected_student_id
+        snapshot = self.runtime_registry.get(student_id) if student_id else None
+        self._teacher_snapshot = snapshot
+        if not snapshot or snapshot.get("stale"):
+            self._analysis_label.setText(
+                "学生端未运行或实时数据已中断"
+                if snapshot else "暂无实时数据"
+            )
+            self._analysis_hint.setText(
+                "最后状态已超时，请确认学生端程序仍在运行。"
+                if snapshot else "请选择已绑定且正在运行学生端的账号。"
+            )
+            self._session_time.setText("有效学习 00:00")
+            for card in (self._card_connector, self._card_device, self._card_poor,
+                         self._card_conf, self._card_rate):
+                card["value"].setText("--")
+                card["indicator"].set_state(StatusIndicator.LEVEL_NEUTRAL, "暂无数据")
+            self._att_gauge.set_value(0)
+            self._med_gauge.set_value(0)
+            self._pred_label.setText("当前状态：--")
+            self._ai_label.setText("暂无学生实时建议")
+            self._eeg_plot.reset()
+            return
+        elapsed = int(snapshot.get("elapsed_seconds") or 0)
+        demo = snapshot.get("data_mode") == "demo"
+        self._session_time.setText(f"有效学习 {elapsed // 60:02d}:{elapsed % 60:02d}")
+        online = bool(snapshot.get("online"))
+        self._card_connector["value"].setText("学生在线" if online else "学生离线")
+        self._card_device["value"].setText("在线" if online else "离线")
+        self._card_poor["value"].setText("--")
+        quality = {"trusted": "接触良好", "warning": "建议调整佩戴",
+                   "rejected": "当前信号不可解释"}.get(snapshot.get("quality_level"), "等待信号")
+        self._card_conf["value"].setText(quality)
+        self._card_rate["value"].setText("教学演示 · 演示数据" if demo else "学生端实时采集")
+        self._analysis_label.setText(
+            f"{snapshot.get('student_name') or student_id} · {snapshot.get('task_name') or '当前无任务'}"
+            + (" · 教学演示" if demo else "")
+        )
+        self._analysis_hint.setText(
+            f"基线：{'已完成' if snapshot.get('baseline_status') == 'COMPLETED' else '待完成'} · "
+            f"学习进度：{'进行中' if snapshot.get('task_id') else '当前无任务'}"
+        )
+        self._att_gauge.set_value(snapshot.get("attention") or 0)
+        self._med_gauge.set_value(snapshot.get("meditation") or 0)
+        stable = CLASS_DISPLAY.get(snapshot.get("stable_state"), "--")
+        if snapshot.get("quality_level") == "rejected":
+            self._pred_label.setText("当前状态：当前信号暂不可解释")
+        else:
+            self._pred_label.setText(f"当前状态：{stable}")
+        self._ai_label.setText(snapshot.get("advice") or "暂无学生实时建议")
+        probabilities = snapshot.get("probabilities") or {}
+        for name, bar in self._prob_panel._bars.items():
+            value = probabilities.get(name)
+            bar.set_value(value or 0.0)
+            bar.set_dimmed(
+                value is None or snapshot.get("quality_level") == "rejected"
+            )
+        self._prob_panel._confidence_label.setText(
+            f"接触质量：{quality}"
+        )
+        raw = snapshot.get("raw_eeg") or []
+        self._eeg_plot.reset()
+        if raw:
+            self._eeg_plot.push_display_points(raw)
+        att_history = snapshot.get("attention_history") or []
+        med_history = snapshot.get("meditation_history") or []
+        self._trend_plot.reset()
+        for att, med in zip(att_history, med_history):
+            self._trend_plot.push_values(att, med)
+        updated = snapshot.get("updated_at") or 0
+        self._focus_values[0].setText(f"学生：{student_id} · 状态：{stable}")
+        self._focus_values[1].setText(
+            "最后更新：" + time.strftime("%H:%M:%S", time.localtime(updated))
+        )
+        self._focus_values[2].setText(
+            f"智能建议：{snapshot.get('advice') or '暂无建议'}"
+        )
 
     def _on_learner_task_changed(self, text: str):
         if self._syncing_role_controls or self._role != "student" or not text:
@@ -410,12 +669,13 @@ class DashboardPage(BasePage):
     def _analysis_view(self, state) -> tuple[str, str, str]:
         """返回 kind/title/hint；优先消费统一 pipeline_state。"""
         pipeline = str(getattr(state, "pipeline_state", "") or "").lower()
-        if pipeline == "error":
+        model_status = str(getattr(state, "model_status", "") or "").upper()
+        if pipeline == "error" or model_status == "FAILED":
             friendly = str(
                 getattr(state, "model_error_user", "")
-                or "情绪分析暂不可用"
+                or "智能分析暂不可用"
             )
-            return "error", friendly, "采集可继续；请在系统诊断中查看详情并修复模型环境。"
+            return "error", friendly, "采集可继续；如问题持续，请联系管理员检查系统配置。"
         if pipeline == "waiting_data":
             return "waiting", "等待设备数据", "收到首个原始脑电数据后才会开始预热。"
         if pipeline == "warming_up":
@@ -515,6 +775,14 @@ class DashboardPage(BasePage):
     # ── 按钮事件 ──
 
     def _on_start(self):
+        if self._role == "teacher":
+            return
+        if getattr(self.state, "session_active", self.state._session_active):
+            return
+        reason = learning_start_block_reason(self.state) if self._role == "student" else ""
+        if reason and self.isVisible():
+            QMessageBox.warning(self, "暂不能开始学习", reason)
+            return
         self.state.reset_session()
         self.service.start_session()
         self._session_started = True
@@ -530,6 +798,8 @@ class DashboardPage(BasePage):
         self.state.add_event("会话开始", "system")
 
     def _on_pause(self):
+        if self._role == "teacher":
+            return
         if self._session_paused:
             self.service.resume_session()
             self._session_paused = False
@@ -542,6 +812,8 @@ class DashboardPage(BasePage):
             self.state.add_event("会话暂停", "system")
 
     def _on_event(self):
+        if self._role == "teacher":
+            return
         text, ok = QInputDialog.getText(
             self, "事件标记", "输入事件描述："
         )
@@ -549,6 +821,8 @@ class DashboardPage(BasePage):
             self.state.add_event(text, "user")
 
     def _on_end(self):
+        if self._role == "teacher":
+            return
         self.service.end_session()
         self._session_started = False
         self._btn_start.setEnabled(True)
@@ -598,6 +872,24 @@ class DashboardPage(BasePage):
         requested_role = self._normalize_role(getattr(s, "current_role", self._role))
         if requested_role != self._role:
             self.set_role(requested_role)
+        if self._role == "teacher":
+            self._refresh_teacher_students()
+            self._update_teacher_snapshot()
+            return
+        session_active = bool(getattr(s, "session_active", s._session_active))
+        session_paused = bool(getattr(s, "session_paused", False))
+        self._session_started = session_active
+        self._session_paused = session_paused
+        start_reason = learning_start_block_reason(
+            s, require_baseline=self._role == "student"
+        ) if self._role == "student" else ""
+        # Keep clickable while idle so an attempted start receives a clear reason.
+        self._btn_start.setEnabled(not session_active)
+        self._btn_start.setToolTip(start_reason or "开始学习记录")
+        self._btn_pause.setEnabled(session_active)
+        self._btn_pause.setText("继续" if session_paused else "暂停")
+        self._btn_event.setEnabled(session_active)
+        self._btn_end.setEnabled(session_active)
         analysis_kind = self._refresh_analysis_status(s)
 
         # 会话时间
@@ -679,7 +971,7 @@ class DashboardPage(BasePage):
             f"{measured_rate:.0f} Hz" if measured_rate is not None else "等待采样"
         )
         mode = str(getattr(s, "mode", "live") or "live").lower()
-        mode_text = {"live": "实时数据", "mock": "模拟数据", "replay": "回放数据"}.get(
+        mode_text = {"live": "实时采集", "mock": "教学演示数据", "replay": "离线回放数据"}.get(
             mode, "未知来源"
         )
         self._card_rate["indicator"].set_state(
@@ -727,7 +1019,7 @@ class DashboardPage(BasePage):
                 bar.set_value(0.0)
                 bar.set_dimmed(True)
             self._prob_panel._warning_label.setText(
-                "情绪分析不可用；技术详情请查看系统诊断"
+                "智能分析暂不可用；如问题持续，请联系管理员"
             )
             self._prob_panel._warning_label.setVisible(True)
         elif analysis_kind == "rejected":
@@ -738,7 +1030,7 @@ class DashboardPage(BasePage):
 
         # ── 预测结果：使用 predicted_state 和 confidence ──
         if analysis_kind == "error":
-            self._pred_label.setText("当前状态：情绪分析不可用")
+            self._pred_label.setText("当前状态：智能分析暂不可用")
             self._pred_label.setStyleSheet("font-size: 16px; padding: 4px 0; color: #F87171;")
         elif analysis_kind == "rejected":
             self._pred_label.setText("当前状态：已拒识（不计入趋势）")

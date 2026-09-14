@@ -1,7 +1,6 @@
 """Mock数据编排服务。
 
-协调 EEGAcquisitionWorker 和 InferenceWorker 两个后台线程，
-将数据统一写入 DashboardState 并发射 ``state_updated`` 信号。
+协调教学演示采集轨迹，直接将演示指标写入 DashboardState。
 
 所有写入操作在主线程执行（通过信号槽跨线程传递），
 确保 DashboardState 的线程安全。
@@ -27,7 +26,6 @@ from services.dashboard_state import (
     DIFFICULTY_DISPLAY, AdaptiveAction,
 )
 from services.eeg_acquisition import EEGAcquisitionWorker, AcquisitionConfig
-from services.inference_service import InferenceWorker, compute_quality
 from services.adaptive_feedback_engine import (
     AdaptiveFeedbackEngine,
     AdaptiveDecision,
@@ -56,7 +54,6 @@ class MockDataService(QObject):
         # 后台线程
         self.acq_config = AcquisitionConfig(mode="mock")
         self.acq_worker = EEGAcquisitionWorker(self.acq_config)
-        self.inf_worker = InferenceWorker()
 
         # 共享自适应反馈引擎（与 Live 共用同一套决策逻辑）
         self.engine = AdaptiveFeedbackEngine(
@@ -77,16 +74,24 @@ class MockDataService(QObject):
         self._session_running = False
         self._warmup_running = False
         self._last_tick_time = 0.0
+        self._demo_started_at = time.monotonic()
 
     # ── 生命周期 ──
 
     def start_streaming(self):
-        """启动数据流（采集+推理）。"""
+        """启动独立教学演示；不加载或调用 Production 模型。"""
+        self.state.mode = "mock"
+        self.state.set_model_ready()
+        self.state.connector_status = "online"
+        self.state.device_status = "online"
+        self.state.warmup_progress = 1.0
+        self.state.quality_level = "trusted"
+        self.state.quality_reasons = ["教学演示数据有效"]
+        self.state.pipeline_state = "ready"
         if not self.acq_worker.isRunning():
             self.acq_worker.start()
-        if not self.inf_worker.isRunning():
-            self.inf_worker.start()
-        self._warmup_running = True
+        self._warmup_running = False
+        self._demo_started_at = time.monotonic()
         self._tick_timer.start()
 
     def stop_streaming(self):
@@ -96,7 +101,6 @@ class MockDataService(QObject):
         self._warmup_running = False
         self._tick_timer.stop()
         self.acq_worker.stop()
-        self.inf_worker.stop()
 
     def start_session(self):
         self.state.session_seconds = 0.0
@@ -107,11 +111,11 @@ class MockDataService(QObject):
         return metadata_path
 
     def pause_session(self):
-        self.state._session_active = False
+        self.state.set_session_paused(True)
         self._session_running = False
 
     def resume_session(self):
-        self.state._session_active = True
+        self.state.set_session_paused(False)
         self._session_running = True
 
     def end_session(self, status: str = "completed"):
@@ -135,59 +139,25 @@ class MockDataService(QObject):
         """
         s = self.state
 
-        # 仅当设备真正在线时才接受 poor_signal / attention / meditation
-        device_online = (
-            s.device_status == "online" and s.connector_status == "online"
-        )
-        if device_online:
-            s.poor_signal = snap.poor_signal
-            s.attention = float(snap.attention)
-            s.meditation = float(snap.meditation)
-            s._eeg_raw_buffer.append(snap.raw)
-            s._attention_history.append(snap.attention)
-            s._meditation_history.append(snap.meditation)
-        else:
-            s.poor_signal = None
-            s.attention = None
-            s.meditation = None
-
-        # 质量等级计算
-        if device_online:
-            quality_level, quality_reasons = compute_quality(
-                s.poor_signal, s.warmup_progress
-            )
-        else:
-            quality_level, quality_reasons = "rejected", ["设备未连接"]
-        s.quality_level = quality_level
-        s.quality_reasons = quality_reasons
-        if s.pipeline_state != "error":
-            if quality_level == "rejected":
-                s.pipeline_state = "rejected"
-            elif not s.warmup_complete:
-                s.pipeline_state = "warming_up"
-            else:
-                s.pipeline_state = "ready"
-
-        # 将模拟情绪趋势传给推理线程
-        if hasattr(self.acq_worker, '_sim_state'):
-            self.inf_worker.set_emotion_trend(self.acq_worker._sim_state.emotion_trend)
+        s.poor_signal = snap.poor_signal
+        s.attention = float(snap.attention)
+        s.meditation = float(snap.meditation)
+        s._eeg_raw_buffer.append(snap.raw)
+        s._attention_history.append(snap.attention)
+        s._meditation_history.append(snap.meditation)
+        s.quality_level = "trusted"
+        s.quality_reasons = ["教学演示数据有效"]
+        s.pipeline_state = "ready"
 
     def _on_acq_status(self, status: dict):
         s = self.state
-        s.connector_status = status.get("connector_status", "offline")
-        s.device_status = status.get("device_status", "offline")
-        s.mode = status.get("mode", "live")
-
-        # 设备离线时：清空 poor_signal / attention / meditation，
-        # 强制标记质量为 rejected
-        if s.device_status != "online" or s.connector_status != "online":
-            s.poor_signal = None
-            s.attention = None
-            s.meditation = None
-            s.quality_level = "rejected"
-            s.quality_reasons = ["设备未连接"]
-            if s.pipeline_state != "error":
-                s.pipeline_state = "rejected"
+        s.connector_status = "online"
+        s.device_status = "online"
+        s.mode = "mock"
+        s.warmup_progress = 1.0
+        s.quality_level = "trusted"
+        s.quality_reasons = ["教学演示数据有效"]
+        s.pipeline_state = "ready"
 
     def _on_inference(self, result: dict):
         """推理线程推送推理结果。"""
@@ -202,12 +172,9 @@ class MockDataService(QObject):
             s.predicted_state = result["predicted_state"]
             s.confidence = result["confidence"]
         else:
-            # 信号不合格时保存概率日志但UI不展示
-            s.prob_positive = None
-            s.prob_neutral = None
-            s.prob_negative = None
-            s.predicted_state = None
-            s.confidence = None
+            # 信号不合格时保留后台原始结果，但不得恢复旧的当前解释。
+            self._invalidate_signal_analysis()
+            return
         if s.pipeline_state != "error":
             s.pipeline_state = (
                 "ready" if s.inference_eligible else "rejected"
@@ -223,6 +190,19 @@ class MockDataService(QObject):
         # 更新反馈文本
         s.feedback_text = self._generate_feedback()
 
+    def _invalidate_signal_analysis(self):
+        s = self.state
+        s.clear_interpretation()
+        s.feedback_text = "当前信号不可解释，请调整佩戴并等待信号恢复。"
+        s.adaptive_feedback_text = ""
+        s.adaptive_action = AdaptiveAction.NONE
+        s.adaptive_action_reason = ""
+        s.adaptive_action_time = None
+        s._intervention_triggered = False
+        s._intervention_cooldown = False
+        s._negative_sustain_seconds = 0.0
+        self.engine.reset()
+
     def _on_tick(self):
         """5Hz定时更新：预热进度、会话时间。"""
         now = time.time()
@@ -233,31 +213,45 @@ class MockDataService(QObject):
 
         s = self.state
 
-        # 预热进度
-        if self._warmup_running and not s.warmup_complete:
-            elapsed = s.warmup_progress * WARMUP_SECONDS + dt
-            s.warmup_progress = min(1.0, elapsed / WARMUP_SECONDS)
+        # Demo is immediately analysis-ready and independent of production warmup.
+        s.warmup_progress = 1.0
+        s.quality_level = "trusted"
+        s.quality_reasons = ["教学演示数据有效"]
+        s.pipeline_state = "ready"
 
         # 会话时间
         if self._session_running:
             s.session_seconds += dt
 
-        # 质量等级重算（仅在设备在线时执行，离线时保持"设备未连接"原因）
-        s = self.state
-        device_online = (
-            s.device_status == "online" and s.connector_status == "online"
-        )
-        if device_online:
-            quality_level, quality_reasons = compute_quality(
-                s.poor_signal, s.warmup_progress
-            )
-            s.quality_level = quality_level
-            s.quality_reasons = quality_reasons
+        demo_t = time.monotonic() - self._demo_started_at
+        self._on_inference(self._demo_result(demo_t))
 
         if self._session_running:
             s.capture_session_snapshot()
 
         s.emit_update()
+
+    @staticmethod
+    def _demo_result(t: float) -> dict:
+        """Deterministic probabilities matching the shortened teaching stages."""
+        phase = t % 80.0
+        if phase < 10.0:
+            probs = np.array([0.28, 0.57, 0.15])
+        elif phase < 25.0:
+            progress = (phase - 10.0) / 15.0
+            probs = np.array([0.48 + 0.24 * progress, 0.40 - 0.18 * progress, 0.12 - 0.06 * progress])
+        elif phase < 35.0:
+            progress = (phase - 25.0) / 10.0
+            probs = np.array([0.60 - 0.40 * progress, 0.28 - 0.04 * progress, 0.12 + 0.44 * progress])
+        elif phase < 60.0:
+            probs = np.array([0.12, 0.18, 0.70])
+        else:
+            progress = min(1.0, (phase - 60.0) / 15.0)
+            probs = np.array([0.18 + 0.20 * progress, 0.24 + 0.26 * progress, 0.58 - 0.46 * progress])
+        probs = probs / probs.sum()
+        predicted = CLASS_NAMES[int(np.argmax(probs))]
+        return {"probabilities": probs.tolist(), "raw_probabilities": probs.tolist(),
+                "predicted_state": predicted, "confidence": float(np.max(probs))}
 
     # ── 持续状态判定（委托给共享 AdaptiveFeedbackEngine）──
 

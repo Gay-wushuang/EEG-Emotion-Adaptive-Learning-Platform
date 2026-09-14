@@ -27,6 +27,7 @@ from services.identity_store import (
     ROLE_RESEARCH,
     ROLE_STUDENT,
     ROLE_TEACHER,
+    role_for_user_id,
 )
 
 
@@ -38,7 +39,7 @@ ROLE_DESCRIPTIONS = {
 
 
 class LoginDialog(QDialog):
-    """Two-step dialog: local identity first, product role second."""
+    """Local account picker; role is derived from the immutable ID prefix."""
 
     def __init__(
         self,
@@ -75,7 +76,6 @@ class LoginDialog(QDialog):
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_identity_page())
-        self._stack.addWidget(self._build_role_page())
         root.addWidget(self._stack, 1)
 
         self._refresh_profiles()
@@ -90,7 +90,10 @@ class LoginDialog(QDialog):
         heading.setStyleSheet("font-size: 20px; font-weight: 600; color: #F4F7FB;")
         layout.addWidget(heading)
 
-        help_text = QLabel("选择已有 ID，或创建一个仅保存在本机的新 ID。")
+        help_text = QLabel(
+            "选择已有账号，或创建本地测试账号。角色由 ID 前缀固定："
+            "st_ 为学生、teacher/tc_ 为教师、admin_ 为管理员。"
+        )
         help_text.setObjectName("PageDescription")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
@@ -106,7 +109,7 @@ class LoginDialog(QDialog):
         form.addRow("本地身份", self._profile_combo)
 
         self._input_user_id = QLineEdit()
-        self._input_user_id.setPlaceholderText("例如：student_001")
+        self._input_user_id.setPlaceholderText("例如：st_001、teacher_01、admin_01")
         self._input_user_id.setMaxLength(32)
         form.addRow("用户 ID", self._input_user_id)
 
@@ -134,9 +137,9 @@ class LoginDialog(QDialog):
         cancel.clicked.connect(self.reject)
         actions.addWidget(cancel)
 
-        next_button = QPushButton("下一步：选择使用端")
+        next_button = QPushButton("进入系统")
         next_button.setObjectName("PrimaryButton")
-        next_button.clicked.connect(self._continue_to_roles)
+        next_button.clicked.connect(self._finish_login)
         actions.addWidget(next_button)
         layout.addLayout(actions)
         return page
@@ -238,34 +241,23 @@ class LoginDialog(QDialog):
             self._refresh_profiles()
 
     def _continue_to_roles(self) -> None:
-        try:
-            user_id, name = self.store.validate(
-                self._input_user_id.text(),
-                self._input_user_name.text(),
-            )
-        except ValueError as exc:
-            self._identity_error.setText(str(exc))
-            return
-
-        self.selected_user_id = user_id
-        self.selected_user_name = name
-        self._role_identity.setText(f"当前身份：{name}（{user_id}）")
-        if self._pending_role not in self._role_buttons:
-            self._pending_role = ROLE_STUDENT
-        self._role_buttons[self._pending_role].setChecked(True)
-        self.selected_role = self._pending_role
-        self._stack.setCurrentIndex(1)
+        # Compatibility hook for older callers; there is no role-selection step.
+        self._finish_login()
 
     def _select_role(self, role: str) -> None:
         self.selected_role = role
 
     def _finish_login(self) -> None:
-        if not self.selected_user_id or not self.selected_user_name:
-            self._stack.setCurrentIndex(0)
+        try:
+            user_id, name = self.store.validate(
+                self._input_user_id.text(), self._input_user_name.text()
+            )
+            role = role_for_user_id(user_id)
+        except ValueError as exc:
+            self._identity_error.setText(str(exc))
             return
-        self.store.save_profile(
-            self.selected_user_id,
-            self.selected_user_name,
-            self.selected_role,
-        )
+        self.selected_user_id = user_id
+        self.selected_user_name = name
+        self.selected_role = role
+        self.store.save_profile(user_id, name, role)
         self.accept()

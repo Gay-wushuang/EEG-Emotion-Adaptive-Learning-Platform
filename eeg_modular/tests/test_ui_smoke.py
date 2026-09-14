@@ -7,9 +7,9 @@
   4. 后台线程正常退出
 
 运行方式（在 eeg_modular 目录下）：
-    E:\\anaconda3\\envs\\eegcnn\\python.exe -m pytest tests/test_ui_smoke.py -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_ui_smoke.py -v
     或
-    E:\\anaconda3\\envs\\eegcnn\\python.exe -m unittest tests.test_ui_smoke -v
+    .venv\\Scripts\\python.exe -m unittest tests.test_ui_smoke -v
 
 注意：需要 PySide6 和 pyqtgraph 已安装。
 使用 QT_QPA_PLATFORM=offscreen 支持无显示器环境。
@@ -197,16 +197,14 @@ class UISmokeTest(unittest.TestCase):
         service = self.window.service
         self.assertTrue(service.acq_worker.isRunning(),
                         "采集线程应正在运行")
-        self.assertTrue(service.inf_worker.isRunning(),
-                        "推理线程应正在运行")
+        self.assertFalse(hasattr(service, "inf_worker"),
+                         "教学演示不得创建模型推理线程")
 
         # 停止
         service.stop_streaming()
 
         self.assertFalse(service.acq_worker.isRunning(),
                          "采集线程未正常退出")
-        self.assertFalse(service.inf_worker.isRunning(),
-                         "推理线程未正常退出")
 
     def test_08_resolution_scaling(self):
         """测试1920x1080和1280x700分辨率适配。"""
@@ -248,11 +246,22 @@ class UISmokeTest(unittest.TestCase):
         self.window._navigate_to("dashboard")
         dashboard = self.window._pages["dashboard"]
         state = self.window.state
+        self.window.service.stop_streaming()
 
         # 再处理一次事件，确保 _on_acq_status 已执行
         self.app.processEvents()
 
-        # Mock模式初始状态：connector_status=offline, device_status=offline
+        # 显式模拟真实设备离线；教学演示模式本身是可用数据源。
+        state.connector_status = "offline"
+        state.device_status = "offline"
+        state.poor_signal = None
+        state.attention = None
+        state.meditation = None
+        state.quality_level = "rejected"
+        state.quality_reasons = ["设备未连接"]
+        state.warmup_progress = 0.0
+        state._eeg_raw_buffer.clear()
+        state.emit_update()
         self.assertEqual(state.connector_status, "offline")
         self.assertEqual(state.device_status, "offline")
 

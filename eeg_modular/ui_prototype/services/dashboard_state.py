@@ -44,7 +44,7 @@ DIFFICULTY_DISPLAY = {
 
 # ── 自适应动作枚举（决策层 → 学习场景正式契约）──
 # maintain: 维持当前任务和难度，只更新反馈
-# reduce_difficulty: hard→medium 或 medium→easy
+# reduce_difficulty: 建议后续降低学习负荷；不得改写当前任务正式难度
 # suggest_break: 已为 easy 时的替代动作，给出休息建议，不结束会话、不删除任务
 class AdaptiveAction:
     NONE = "none"                       # 默认：无动作
@@ -56,11 +56,23 @@ class AdaptiveAction:
 ADAPTIVE_ACTION_DISPLAY = {
     AdaptiveAction.NONE: "无",
     AdaptiveAction.MAINTAIN: "维持当前任务",
-    AdaptiveAction.REDUCE_DIFFICULTY: "降低任务难度",
+    AdaptiveAction.REDUCE_DIFFICULTY: "建议降低学习负荷",
     AdaptiveAction.SUGGEST_BREAK: "建议休息",
 }
 
 SESSION_SOURCES = ("live", "mock", "replay")
+EVENT_SOURCES = (*SESSION_SOURCES, "system", "teacher", "self_report")
+SESSION_IDLE = "IDLE"
+SESSION_RUNNING = "RUNNING"
+SESSION_PAUSED = "PAUSED"
+MODEL_LOADING = "LOADING"
+MODEL_READY = "READY"
+MODEL_FAILED = "FAILED"
+BASELINE_IDLE = "IDLE"
+BASELINE_COLLECTING = "COLLECTING"
+BASELINE_COMPLETED = "COMPLETED"
+BASELINE_EARLY_STOPPED = "EARLY_STOPPED"
+BASELINE_FAILED = "FAILED"
 
 
 def _normalise_source(value: Optional[str], *, demo: bool = False) -> str:
@@ -68,6 +80,13 @@ def _normalise_source(value: Optional[str], *, demo: bool = False) -> str:
     if source in SESSION_SOURCES:
         return source
     return "mock" if demo else "live"
+
+
+def _normalise_event_source(value: Optional[str], *, demo: bool = False) -> str:
+    source = str(value or "").strip().lower()
+    if source in EVENT_SOURCES:
+        return source
+    return _normalise_source(source, demo=demo)
 
 
 def _iso_time(timestamp: Optional[float] = None) -> str:
@@ -103,13 +122,15 @@ class EventMarker:
     type: str = "marker"
     session_id: str = ""
     task_id: str = ""
+    observer_id: str = ""
+    student_id: str = ""
     time: str = ""
     content: str = ""
     event_id: str = field(default_factory=lambda: f"E{uuid.uuid4().hex[:12]}")
 
     def __post_init__(self) -> None:
         self.timestamp = _timestamp(self.timestamp or self.time)
-        self.source = _normalise_source(self.source)
+        self.source = _normalise_event_source(self.source)
         self.type = str(self.type or self.category or "marker")
         self.time = str(self.time or _iso_time(self.timestamp))
         self.content = str(self.content or self.label)
@@ -124,6 +145,8 @@ class EventMarker:
             "type": self.type,
             "session_id": self.session_id,
             "task_id": self.task_id,
+            "observer_id": self.observer_id,
+            "student_id": self.student_id,
             "time": self.time,
             "content": self.content,
             "note": self.note,
@@ -144,6 +167,8 @@ class EventMarker:
             type=str(payload.get("type") or payload.get("category") or "marker"),
             session_id=str(payload.get("session_id") or ""),
             task_id=str(payload.get("task_id") or ""),
+            observer_id=str(payload.get("observer_id") or ""),
+            student_id=str(payload.get("student_id") or ""),
             time=str(payload.get("time") or ""),
             content=str(payload.get("content") or payload.get("label") or ""),
             event_id=str(payload.get("event_id") or f"E{uuid.uuid4().hex[:12]}"),
@@ -161,6 +186,9 @@ class TaskRecord:
     end_time: str = ""
     status: str = "running"
     notes: str = ""
+    duration_seconds: float = 0.0
+    assignment_id: str = ""
+    _running_since: Optional[float] = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         return {
@@ -172,6 +200,8 @@ class TaskRecord:
             "end_time": self.end_time,
             "status": self.status,
             "notes": self.notes,
+            "duration_seconds": self.duration_seconds,
+            "assignment_id": self.assignment_id,
         }
 
     @classmethod
@@ -185,6 +215,8 @@ class TaskRecord:
             end_time=str(payload.get("end_time") or ""),
             status=str(payload.get("status") or "completed"),
             notes=str(payload.get("notes") or ""),
+            duration_seconds=_float(payload.get("duration_seconds")),
+            assignment_id=str(payload.get("assignment_id") or ""),
         )
 
 
@@ -335,6 +367,9 @@ class DashboardState(QObject):
     pipeline_state: str               # starting | waiting_data | warming_up | ready | rejected | error
     model_error_user: str             # 用户可见的安全提示
     model_error_detail: str           # 仅供设置/诊断页读取的技术详情
+    model_status: str                  # LOADING | READY | FAILED
+    session_status: str                # IDLE | RUNNING | PAUSED
+    baseline_status: str               # IDLE | COLLECTING | COMPLETED | EARLY_STOPPED | FAILED
 
     # ── 内部簿记字段（不暴露给UI业务逻辑，仅用于图表缓冲）──
     # 这些字段不属于正式接口，UI图表组件可直接使用原始缓冲进行绘制，
@@ -403,6 +438,8 @@ class DashboardState(QObject):
         self.pipeline_state = "starting"
         self.model_error_user = ""
         self.model_error_detail = ""
+        self.model_status = MODEL_LOADING
+        self.session_status = SESSION_IDLE
 
         # 自适应学习场景字段（默认安全值）
         self.task_type = "自由学习"
@@ -426,6 +463,8 @@ class DashboardState(QObject):
         self._tasks: list[TaskRecord] = []
         self._current_task_id = ""
         self._session_started_at: Optional[float] = None
+        self._session_running_since: Optional[float] = None
+        self._session_active_elapsed = 0.0
         self._session_source = "live"
         self._session_demo = False
         self._active_record: Optional[SessionRecord] = None
@@ -438,6 +477,7 @@ class DashboardState(QObject):
         self._user_id = "demo_user"
         self._user_name = "演示用户"
         self._baseline_phase = "idle"
+        self.baseline_status = BASELINE_IDLE
         self._baseline_elapsed = 0.0
         self._baseline_target = 75.0
         self._negative_sustain_seconds = 0.0
@@ -498,6 +538,46 @@ class DashboardState(QObject):
     def current_task_id(self) -> str:
         return self._current_task_id
 
+    @property
+    def current_task_elapsed_seconds(self) -> float:
+        task = self._task_by_id(self._current_task_id)
+        if task is None:
+            return 0.0
+        elapsed = float(task.duration_seconds)
+        if task._running_since is not None and not self.session_paused:
+            elapsed += max(0.0, time.monotonic() - task._running_since)
+        return elapsed
+
+    @property
+    def session_active(self) -> bool:
+        """Whether an auditable session exists, including while paused."""
+        return self.session_status in {SESSION_RUNNING, SESSION_PAUSED}
+
+    @property
+    def session_paused(self) -> bool:
+        return self.session_status == SESSION_PAUSED
+
+    def set_session_paused(self, paused: bool) -> None:
+        if not self.session_active:
+            return
+        now = time.monotonic()
+        task = self._task_by_id(self._current_task_id)
+        if paused and self.session_status == SESSION_RUNNING:
+            if self._session_running_since is not None:
+                self._session_active_elapsed += max(0.0, now - self._session_running_since)
+                self._session_running_since = None
+            if task is not None and task._running_since is not None:
+                task.duration_seconds += max(0.0, now - task._running_since)
+                task._running_since = None
+        elif not paused and self.session_status == SESSION_PAUSED:
+            self._session_running_since = now
+            if task is not None and task.status == "running":
+                task._running_since = now
+        self.session_status = SESSION_PAUSED if paused else SESSION_RUNNING
+        # Compatibility: this flag means the session envelope exists, not that
+        # acquisition is currently advancing its timer.
+        self._session_active = True
+
     def configure_session_store(
         self,
         sessions_dir: Optional[Path | str] = None,
@@ -548,7 +628,10 @@ class DashboardState(QObject):
             self._session_source == "mock" if demo is None else bool(demo)
         )
         self._session_started_at = time.time()
+        self._session_running_since = time.monotonic()
+        self._session_active_elapsed = 0.0
         self._session_active = True
+        self.session_status = SESSION_RUNNING
         self.task_running = False
         self._events.clear()
         self._tasks.clear()
@@ -570,7 +653,7 @@ class DashboardState(QObject):
         path = self._persist_active_record()
         self.add_event(
             "会话开始", "system", event_type="session_start",
-            source=self._session_source,
+            source="system",
         )
         return path
 
@@ -579,6 +662,7 @@ class DashboardState(QObject):
         task_name: Optional[str] = None,
         difficulty: Optional[str] = None,
         notes: str = "",
+        assignment_id: str = "",
     ) -> Optional[str]:
         """Begin a task segment and return its task_id."""
         if not self._session_active:
@@ -590,9 +674,10 @@ class DashboardState(QObject):
             difficulty or self.task_difficulty,
             notes,
         )
+        task.assignment_id = str(assignment_id or "")
         self.add_event(
             f"开始任务: {task.name}", "system", notes,
-            event_type="task_start", task_id=task.task_id,
+            source="system", event_type="task_start", task_id=task.task_id,
             _manage_task=False,
         )
         return task.task_id
@@ -606,6 +691,9 @@ class DashboardState(QObject):
             return None
         task_id = task.task_id
         task.end_time = _iso_time()
+        if task._running_since is not None:
+            task.duration_seconds += max(0.0, time.monotonic() - task._running_since)
+            task._running_since = None
         task.status = "completed"
         if note:
             task.notes = "；".join(filter(None, (task.notes, note)))
@@ -613,7 +701,7 @@ class DashboardState(QObject):
         self._current_task_id = ""
         self.add_event(
             "结束任务", "system", note,
-            event_type="task_end", task_id=task_id,
+            source="system", event_type="task_end", task_id=task_id,
             _manage_task=False,
         )
         return task
@@ -630,6 +718,8 @@ class DashboardState(QObject):
         task_id: Optional[str] = None,
         event_time: Optional[float] = None,
         content: Optional[str] = None,
+        observer_id: Optional[str] = None,
+        student_id: Optional[str] = None,
         _manage_task: bool = True,
     ) -> EventMarker:
         """Add one canonical event while retaining the old 3-argument API."""
@@ -665,10 +755,14 @@ class DashboardState(QObject):
             label=text,
             category=category,
             note=note,
-            source=_normalise_source(source or self._session_source, demo=self._session_demo),
+            source=_normalise_event_source(
+                source or self._session_source, demo=self._session_demo
+            ),
             type=kind,
             session_id=session_id or self.run_id,
             task_id=linked_task or "",
+            observer_id=str(observer_id or ""),
+            student_id=str(student_id or self._user_id or ""),
             content=text,
         )
         self._events.append(ev)
@@ -676,6 +770,11 @@ class DashboardState(QObject):
         if _manage_task and self._session_active and kind == "task_end":
             task = self._task_by_id(linked_task)
             if task is not None:
+                if task._running_since is not None:
+                    task.duration_seconds += max(
+                        0.0, time.monotonic() - task._running_since
+                    )
+                    task._running_since = None
                 task.end_time = ev.time
                 task.status = "completed"
             self._current_task_id = ""
@@ -707,9 +806,22 @@ class DashboardState(QObject):
         self.pipeline_state = "error"
         self.model_error_user = str(user_message)
         self.model_error_detail = str(detail)
+        self.model_status = MODEL_FAILED
         self.quality_level = "rejected"
         self.quality_reasons = [self.model_error_user]
         self.feedback_text = self.model_error_user
+        self.clear_interpretation()
+
+    def set_model_ready(self) -> None:
+        """Publish successful model initialization without inventing a result."""
+        self.model_status = MODEL_READY
+        self.model_error_user = ""
+        self.model_error_detail = ""
+
+    def set_model_loading(self) -> None:
+        self.model_status = MODEL_LOADING
+        self.model_error_user = ""
+        self.model_error_detail = ""
         self.clear_interpretation()
 
     def finalize_session(
@@ -721,6 +833,8 @@ class DashboardState(QObject):
         """Finalize summaries, save metadata, then refresh isolated history."""
         if self._active_record is None:
             self._session_active = False
+            self.session_status = SESSION_IDLE
+            self._session_running_since = None
             return None
         if self._current_task_id:
             self.end_task(note="随会话结束")
@@ -733,8 +847,14 @@ class DashboardState(QObject):
         now = time.time()
         record.end_time = _iso_time(now)
         record.status = status
-        elapsed = now - self._session_started_at if self._session_started_at else 0.0
-        record.duration_seconds = max(float(self.session_seconds), elapsed)
+        if self._session_running_since is not None:
+            self._session_active_elapsed += max(
+                0.0, time.monotonic() - self._session_running_since
+            )
+            self._session_running_since = None
+        record.duration_seconds = max(
+            float(self.session_seconds), self._session_active_elapsed
+        )
         record.user_id = self._user_id
         record.user_name = self._user_name
         if data_files:
@@ -757,6 +877,7 @@ class DashboardState(QObject):
 
         path = self._persist_active_record()
         self._session_active = False
+        self.session_status = SESSION_IDLE
         self.task_running = False
         self._active_record = None
         self.reload_history(include_demo=self._session_demo)
@@ -766,6 +887,11 @@ class DashboardState(QObject):
         if self._current_task_id:
             current = self._task_by_id(self._current_task_id)
             if current is not None and current.status == "running":
+                if current._running_since is not None:
+                    current.duration_seconds += max(
+                        0.0, time.monotonic() - current._running_since
+                    )
+                    current._running_since = None
                 current.end_time = _iso_time()
                 current.status = "completed"
         task = TaskRecord(
@@ -776,6 +902,7 @@ class DashboardState(QObject):
             ),
             start_time=_iso_time(),
             notes=notes,
+            _running_since=None if self.session_paused else time.monotonic(),
         )
         self._tasks.append(task)
         self._current_task_id = task.task_id
@@ -893,9 +1020,12 @@ class DashboardState(QObject):
         self._current_task_id = ""
         self._active_record = None
         self._session_started_at = None
+        self._session_running_since = None
+        self._session_active_elapsed = 0.0
         self.warmup_progress = 0.0
         self.session_seconds = 0.0
         self._session_active = False
+        self.session_status = SESSION_IDLE
         self._negative_sustain_seconds = 0.0
         self._intervention_triggered = False
         self._intervention_cooldown = False

@@ -34,6 +34,7 @@ from smart_learning_app.inference_engine import ProductionInferenceEngine
 SAMPLE_RATE = 512
 WINDOW_SAMPLES = 30 * SAMPLE_RATE
 INFERENCE_STEP_SAMPLES = 2 * SAMPLE_RATE
+RAW_DATA_TIMEOUT_SECONDS = 3.0
 
 
 class SessionCsvWriter:
@@ -104,6 +105,7 @@ class ThinkGearLiveWorker(QThread):
         self._raw_count = 0
         self._first_raw_monotonic: float | None = None
         self._last_raw_monotonic: float | None = None
+        self._raw_timed_out = False
 
     def stop(self) -> None:
         self._running = False
@@ -160,6 +162,7 @@ class ThinkGearLiveWorker(QThread):
                 except socket.timeout:
                     pass
                 now = time.monotonic()
+                self._check_raw_timeout(now)
                 if now - last_emit >= 0.1:
                     self._emit_batch(now)
                     last_emit = now
@@ -176,6 +179,21 @@ class ThinkGearLiveWorker(QThread):
         self._raw_count = 0
         self._first_raw_monotonic = None
         self._last_raw_monotonic = None
+        self._raw_timed_out = False
+
+    def _check_raw_timeout(self, now: float) -> None:
+        """Reuse the Raw receive clock to confirm device loss after a grace period."""
+        if (
+            self._last_raw_monotonic is not None
+            and not self._raw_timed_out
+            and now - self._last_raw_monotonic >= RAW_DATA_TIMEOUT_SECONDS
+        ):
+            self._raw_timed_out = True
+            self.status_changed.emit({
+                "connector_status": "online",
+                "device_status": "waiting_raw",
+                "reason": "EEG Raw 数据接收超时，设备可能已断开",
+            })
 
     def _consume_packet(self, packet: dict) -> None:
         if "poorSignalLevel" in packet:
@@ -190,7 +208,8 @@ class ThinkGearLiveWorker(QThread):
             return
         value = int(packet["rawEeg"])
         now = time.monotonic()
-        if self._first_raw_monotonic is None:
+        if self._first_raw_monotonic is None or self._raw_timed_out:
+            self._raw_timed_out = False
             self._first_raw_monotonic = now
             self.status_changed.emit({
                 "connector_status": "online",
@@ -233,6 +252,7 @@ class ThinkGearLiveWorker(QThread):
 class ProductionInferenceWorker(QThread):
     result_ready = Signal(object)
     error_occurred = Signal(str)
+    model_ready = Signal()
 
     def __init__(self, package_dir: Path):
         super().__init__()
@@ -271,6 +291,7 @@ class ProductionInferenceWorker(QThread):
         except Exception as exc:
             self.error_occurred.emit(f"生产模型自检失败：{exc}")
             return
+        self.model_ready.emit()
         while self._running:
             try:
                 window = self._queue.get(timeout=0.2)
@@ -303,6 +324,7 @@ class LiveDataService(QObject):
         self.acquisition.error_occurred.connect(self._on_error)
         self.inference.result_ready.connect(self._on_result)
         self.inference.error_occurred.connect(self._on_error)
+        self.inference.model_ready.connect(self._on_model_ready)
         self._timer = QTimer(self)
         self._timer.setInterval(200)
         self._timer.timeout.connect(self._tick)
@@ -316,6 +338,9 @@ class LiveDataService(QObject):
         self._session_raw_origin = 0
         self._accepted_states = deque(maxlen=45)  # 90 s at a 2 s inference step
         self._inference_index = 0
+        self._device_seen_online = False
+        self._last_device_online = False
+        self._last_recorded_ai_state = None
 
         # 共享自适应反馈引擎（与 Mock 共用同一套决策逻辑）
         self.engine = AdaptiveFeedbackEngine(
@@ -326,6 +351,7 @@ class LiveDataService(QObject):
 
     def start_streaming(self) -> None:
         if not self.inference.isRunning():
+            self.state.set_model_loading()
             self.inference.start()
         if not self.acquisition.isRunning():
             self.acquisition.start()
@@ -338,6 +364,29 @@ class LiveDataService(QObject):
         self.acquisition.stop()
         self.inference.stop()
 
+    def suspend_streaming(self) -> None:
+        """Pause acquisition while retaining the loaded Production model."""
+        self._timer.stop()
+        self.acquisition.stop()
+
+    def resume_streaming(self) -> None:
+        """Resume live acquisition after teaching demo without rebuilding it."""
+        self.state.mode = "live"
+        self.state.connector_status = "connecting"
+        self.state.device_status = "offline"
+        self.state.poor_signal = None
+        self.state.warmup_progress = 0.0
+        self.state.quality_level = "rejected"
+        self.state.quality_reasons = ["正在等待实时 EEG 数据"]
+        self.state.clear_interpretation()
+        if not self.inference.isRunning():
+            self.state.set_model_loading()
+            self.inference.start()
+        if not self.acquisition.isRunning():
+            self.acquisition.start()
+        self._last_tick = time.monotonic()
+        self._timer.start()
+
     def start_session(self) -> str:
         if self._session_writer is not None:
             self.end_session(status="interrupted")
@@ -347,6 +396,7 @@ class LiveDataService(QObject):
         self._session_raw_origin = int(self.state._raw_sample_count)
         self._accepted_states.clear()
         self._inference_index = 0
+        self._last_recorded_ai_state = None
         self.state.begin_session(
             source="live",
             demo=False,
@@ -356,11 +406,11 @@ class LiveDataService(QObject):
         return str(self._session_csv_path)
 
     def pause_session(self) -> None:
-        self.state._session_active = False
+        self.state.set_session_paused(True)
         self._session_running = False
 
     def resume_session(self) -> None:
-        self.state._session_active = True
+        self.state.set_session_paused(False)
         self._session_running = True
 
     def end_session(self, status: str = "completed") -> str | None:
@@ -393,6 +443,17 @@ class LiveDataService(QObject):
         return str(writer.path)
 
     def _on_status(self, status: dict) -> None:
+        now_online = status["device_status"] == "online"
+        session_active = bool(getattr(self.state, "session_active", False))
+        if session_active and self._device_seen_online and now_online != self._last_device_online:
+            self.state.add_event(
+                "EEG 信号恢复" if now_online else "EEG 信号丢失",
+                "system", source="system",
+                event_type="signal_recovered" if now_online else "signal_lost",
+            )
+        if now_online:
+            self._device_seen_online = True
+        self._last_device_online = now_online
         self.state.mode = "live"
         self.state.connector_status = status["connector_status"]
         self.state.device_status = status["device_status"]
@@ -416,14 +477,11 @@ class LiveDataService(QObject):
             self.state._eeg_raw_buffer.clear()
             self.state.quality_level = "rejected"
             self.state.quality_reasons = [status.get("reason", "等待设备数据")]
-            self._accepted_states.clear()
-            self.state.stable_state = None
-            self.state.clear_interpretation()
-            # 设备离线时复位自适应引擎
-            self.engine.reset()
-            self.state._intervention_triggered = False
-            self.state._intervention_cooldown = False
-            self.state._negative_sustain_seconds = 0.0
+            if self.state.model_error_detail:
+                # Preserve the stronger model FAILED message.
+                self.state.clear_interpretation()
+            else:
+                self._invalidate_signal_analysis()
         self.state.emit_update()
 
     def _on_batch(self, batch: dict) -> None:
@@ -492,6 +550,7 @@ class LiveDataService(QObject):
             s.pipeline_state = "error"
         elif s.quality_level == "rejected":
             s.pipeline_state = "rejected"
+            self._invalidate_signal_analysis()
         elif not s.warmup_complete:
             s.pipeline_state = "warming_up"
         else:
@@ -503,8 +562,12 @@ class LiveDataService(QObject):
 
     def _on_result(self, result) -> None:
         s = self.state
-        s.model_error_user = ""
-        s.model_error_detail = ""
+        s.set_model_ready()
+        # A result queued before signal rejection must not restore stale UI.
+        if s.quality_level == "rejected":
+            self._invalidate_signal_analysis()
+            s.emit_update()
+            return
         probs = np.asarray(result.probabilities, dtype=float)
         s.prob_positive, s.prob_neutral, s.prob_negative = probs.tolist()
         s.predicted_state = result.display_class
@@ -520,6 +583,16 @@ class LiveDataService(QObject):
                 name for name in reversed(self._accepted_states) if name in tied
             )
             s.feedback_text = self._feedback(s.stable_state)
+            if (
+                bool(getattr(s, "session_active", False))
+                and s.stable_state
+                and s.stable_state != self._last_recorded_ai_state
+            ):
+                s.add_event(
+                    f"AI 状态变化：{s.stable_state}", "system",
+                    source="system", event_type="ai_state_change",
+                )
+                self._last_recorded_ai_state = s.stable_state
         else:
             # Rejected predictions are not votes and do not erase prior valid evidence.
             s.stable_state = s.stable_state if self._accepted_states else None
@@ -552,6 +625,25 @@ class LiveDataService(QObject):
             s._intervention_triggered = False
 
         s.emit_update()
+
+    def _invalidate_signal_analysis(self) -> None:
+        """Clear current interpretation while keeping a healthy model READY."""
+        s = self.state
+        s.clear_interpretation()
+        s.feedback_text = "当前信号不可解释，请调整佩戴并等待信号恢复。"
+        s.adaptive_feedback_text = ""
+        s.adaptive_action = AdaptiveAction.NONE
+        s.adaptive_action_reason = ""
+        s.adaptive_action_time = None
+        s._intervention_triggered = False
+        s._intervention_cooldown = False
+        s._negative_sustain_seconds = 0.0
+        self._accepted_states.clear()
+        self.engine.reset()
+
+    def _on_model_ready(self) -> None:
+        self.state.set_model_ready()
+        self.state.emit_update()
 
     def _on_error(self, message: str) -> None:
         is_model_error = any(token in message for token in (
