@@ -400,11 +400,20 @@ class TeacherObserverService:
 
 
 class TeacherSelectionContext:
+    """Shared teacher-side student selection with change notification.
+
+    ``select`` notifies registered ``(owner, method_name)`` listeners so every
+    teacher page that depends on the currently selected student refreshes
+    immediately.  Listeners are weak: destroyed pages are dropped silently.
+    """
+
     _shared = None
 
     def __init__(self):
         self.teacher_id = ""
         self.selected_student_id = ""
+        self._listeners: list[tuple[weakref.ref, str]] = []
+        self._notifying = False
 
     @classmethod
     def shared(cls):
@@ -414,9 +423,38 @@ class TeacherSelectionContext:
 
     def set_teacher(self, teacher_id: str):
         teacher_id = str(teacher_id or "")
-        if teacher_id != self.teacher_id:
-            self.teacher_id = teacher_id
-            self.selected_student_id = ""
+        if self._notifying or teacher_id == self.teacher_id:
+            # 通知期间不允许其他教师身份回写（多窗口残留页面的
+            # 刷新会重新断言自己的 teacher_id，否则会清空刚做的选择）。
+            return
+        self.teacher_id = teacher_id
+        self.selected_student_id = ""
+
+    def add_listener(self, owner, method_name: str) -> None:
+        """Register ``owner.method_name(student_id)`` for selection changes."""
+        self._listeners.append((weakref.ref(owner, self._drop_listener), method_name))
+
+    def _drop_listener(self, ref) -> None:
+        self._listeners = [item for item in self._listeners if item[0] is not ref]
 
     def select(self, student_id: str):
-        self.selected_student_id = str(student_id or "")
+        student_id = str(student_id or "")
+        if student_id == self.selected_student_id or self._notifying:
+            # 通知期间忽略来自旧 combo 的回写，防止"选择复活"：
+            # 监听者刷新时可能用陈旧下拉框值再次调用 select()。
+            return
+        self.selected_student_id = student_id
+        self._notifying = True
+        try:
+            for ref, method_name in list(self._listeners):
+                owner = ref()
+                if owner is None:
+                    continue
+                try:
+                    getattr(owner, method_name)(student_id)
+                except RuntimeError:
+                    # Qt widget already destroyed (e.g. closed window in tests).
+                    self._listeners = [item for item in self._listeners
+                                       if item[0] is not ref]
+        finally:
+            self._notifying = False

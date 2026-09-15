@@ -101,6 +101,11 @@ ROLE_NAV_LABELS = {
     },
 }
 
+ADMIN_NAV_ICONS = {
+    "welcome": "◈", "baseline": "⌁", "dashboard": "◉",
+    "task": "▣", "history": "▤", "settings": "⚙", "replay": "▶",
+}
+
 
 class MainWindow(QMainWindow):
     """主窗口。
@@ -246,6 +251,15 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("Brain-Computer Learning Assistant")
         subtitle.setObjectName("AppSubtitle")
         layout.addWidget(subtitle)
+
+        self._admin_console_title = QLabel("管理员控制台")
+        self._admin_console_title.setStyleSheet(
+            "color: #8EC5FF; font-size: 12px; font-weight: 700; "
+            "padding: 7px 9px; margin-top: 6px; background: #152338; "
+            "border: 1px solid #294263; border-radius: 6px;"
+        )
+        self._admin_console_title.setVisible(self._role == ROLE_RESEARCH)
+        layout.addWidget(self._admin_console_title)
 
         layout.addSpacing(12)
 
@@ -494,6 +508,16 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "_role_label"):
             self._role_label.setText(ROLE_LABELS[self._role])
+        if hasattr(self, "_admin_console_title"):
+            admin = self._role == ROLE_RESEARCH
+            self._admin_console_title.setVisible(admin)
+            self._identity_label.setStyleSheet(
+                ("color: #F3F7FC; font-size: 13px; font-weight: 700; "
+                 "padding: 9px 10px 4px 10px; background: #151F2E; "
+                 "border-left: 2px solid #4A8DFF;")
+                if admin else
+                "color: #D8DFE9; font-size: 13px; font-weight: 600; padding-top: 4px;"
+            )
         if hasattr(self, "_mode_combo"):
             teacher = self._role == ROLE_TEACHER
             self._mode_combo.setVisible(not teacher)
@@ -509,7 +533,19 @@ class MainWindow(QMainWindow):
         allowed = set(ROLE_PAGE_KEYS[self._role])
         for key, button in self._nav_buttons.items():
             button.setVisible(key in allowed)
-            button.setText(ROLE_NAV_LABELS[self._role].get(key, button.text()))
+            label = ROLE_NAV_LABELS[self._role].get(key, button.text())
+            if self._role == ROLE_RESEARCH:
+                button.setText(f"  {ADMIN_NAV_ICONS.get(key, '•')}   {label}")
+                button.setStyleSheet(
+                    "QPushButton { text-align: left; padding-left: 14px; "
+                    "border-radius: 7px; color: #AEBBD0; }"
+                    "QPushButton:hover { background: #192A42; color: #EAF2FF; }"
+                    "QPushButton:checked { background: #203653; color: #70B7FF; "
+                    "font-weight: 700; border-left: 3px solid #4A8DFF; }"
+                )
+            else:
+                button.setText(label)
+                button.setStyleSheet("")
 
         if hasattr(self, "stack"):
             current = self.stack.currentWidget()
@@ -644,6 +680,10 @@ class MainWindow(QMainWindow):
         self._mode_combo.blockSignals(True)
         self._mode_combo.setCurrentIndex(1 if self._mode == "mock" else 0)
         self._mode_combo.blockSignals(False)
+        # Round 4A-2：历史页可见时，模式切换后立即同步筛选/列表/说明文字。
+        history_page = self._pages.get("history")
+        if history_page is not None and hasattr(history_page, "on_data_mode_changed"):
+            history_page.on_data_mode_changed(mode)
         self.state.emit_update()
         return True
 

@@ -1,6 +1,6 @@
 """Local identity persistence for the UI prototype.
 
-Only a short local identifier, display name and last selected role are stored.
+Only a short local identifier, display name and immutable role are stored.
 No EEG/session data or credentials are written by this module.
 """
 
@@ -148,6 +148,26 @@ class IdentityStore:
             data["last_user_id"] = user_id
         self._save(data)
         return dict(profile)
+
+    def create_profile(self, role: str, name: str) -> Dict[str, str]:
+        """Create a local identity with an automatically allocated role prefix."""
+        role = str(role or "").strip().lower()
+        if role not in VALID_ROLES:
+            raise ValueError("请选择学生、教师或管理员角色。")
+        name = str(name or "").strip()
+        if not (1 <= len(name) <= 40):
+            raise ValueError("姓名需为 1–40 个字符。")
+
+        prefix = {
+            ROLE_STUDENT: "st_",
+            ROLE_TEACHER: "teacher_",
+            ROLE_RESEARCH: "admin_",
+        }[role]
+        existing = {item["user_id"].lower() for item in self.list_profiles()}
+        number = 1
+        while f"{prefix}{number:03d}".lower() in existing:
+            number += 1
+        return self.save_profile(f"{prefix}{number:03d}", name, role)
 
     def delete_profile(self, user_id: str) -> bool:
         data = self._load()

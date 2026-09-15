@@ -247,7 +247,8 @@ class IdentityRoleUiTest(unittest.TestCase):
 
     def test_student_history_is_filtered_by_current_user(self):
         from services.dashboard_state import SessionRecord
-        from services.identity_store import ROLE_RESEARCH, ROLE_STUDENT, ROLE_TEACHER
+        from services.identity_store import IdentityStore, ROLE_RESEARCH, ROLE_STUDENT, ROLE_TEACHER
+        from services.teaching_store import TeacherStudentStore
 
         window = self._window(ROLE_STUDENT, "st_01", "学生一")
         history = window._pages["history"]
@@ -261,11 +262,36 @@ class IdentityRoleUiTest(unittest.TestCase):
             [item.session_id for item in history._get_sorted_sessions()], ["own"]
         )
 
-        window.set_identity("teacher_01", "教师", ROLE_TEACHER)
-        self.assertEqual(
-            {item.session_id for item in history._get_sorted_sessions()},
-            {"own", "other"},
-        )
+        # Round 4C：教师历史严格按当前选中学生过滤。注入临时绑定存储，
+        # 避免 UI 页面读取真实 APPDATA 绑定导致断言依赖机器状态。
+        with tempfile.TemporaryDirectory() as directory:
+            identities = IdentityStore(Path(directory) / "identities.json")
+            for uid, name in (("teacher_01", "教师"), ("st_01", "学生一"),
+                              ("st_02", "学生二")):
+                identities.save_profile(uid, name, make_current=False)
+            bindings = TeacherStudentStore(
+                Path(directory) / "bindings.json", identity_store=identities
+            )
+            bindings.add("teacher_01", "st_01")
+            bindings.add("teacher_01", "st_02")
+            for page in window._pages.values():
+                if hasattr(page, "binding_store"):
+                    page.binding_store = bindings
+                if getattr(page, "identity_store", None) is not None:
+                    page.identity_store = identities
+
+            window.set_identity("teacher_01", "教师", ROLE_TEACHER)
+            selection = history._selection_context
+            selection.select("")
+            self.assertEqual(history._get_sorted_sessions(), [])
+            selection.select("st_01")
+            self.assertEqual(
+                [item.session_id for item in history._get_sorted_sessions()], ["own"]
+            )
+            selection.select("st_02")
+            self.assertEqual(
+                [item.session_id for item in history._get_sorted_sessions()], ["other"]
+            )
         window.set_identity("admin_01", "管理员", ROLE_RESEARCH)
         self.assertEqual(
             {item.session_id for item in history._get_sorted_sessions()},

@@ -199,7 +199,9 @@ class SettingsPage(BasePage):
         return folder.resolve()
 
     def _open_sessions_folder(self):
-        folder = self._sessions_dir()
+        # 与 History/Replay 统一：优先 SessionStore 当前真实根目录。
+        from services.session_store import resolve_sessions_root
+        folder = resolve_sessions_root(self.state, self.service)
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 

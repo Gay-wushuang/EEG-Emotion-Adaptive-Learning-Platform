@@ -26,7 +26,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QPushButton, QFrame, QSlider, QFileDialog, QComboBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMessageBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QSizePolicy,
 )
 
 from pages.base_page import BasePage
@@ -95,23 +95,18 @@ class ReplayPage(BasePage):
         self._build_ui()
 
     def _build_ui(self):
-        splitter = QSplitter(Qt.Vertical)
-
-        # ── 上部：控制 + 图表 ──
-        top = QWidget()
-        top_layout = QVBoxLayout(top)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(10)
+        root = self.content_layout
+        root.setSpacing(10)
 
         # 页面定位横幅（管理员 / 开发 / 实验诊断工具，非学生学习与教师教学流程）
         self._role_banner = QLabel("定位：管理员 / 开发 / 实验诊断工具（离线分析与展示，不参与学生学习与教师教学流程）")
+        self._role_banner.setObjectName("ReplayRoleBanner")
         self._role_banner.setStyleSheet(
-            "background-color: rgba(91,141,239,0.08); "
-            "color: #8CA6D8; font-size: 12px; font-weight: 500; "
-            "padding: 6px 10px; border-radius: 4px;"
+            "background:#172235;border:1px solid #27364D;border-radius:7px;"
+            "color:#9FB4D2;font-size:12px;font-weight:500;padding:7px 12px;"
         )
-        self._role_banner.setAlignment(Qt.AlignCenter)
-        top_layout.addWidget(self._role_banner)
+        self._role_banner.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        root.addWidget(self._role_banner)
 
         # 回放模式 - 演示数据 标记（加载示例数据后显示）
         self._demo_label = QLabel("示例数据（演示用途）— 不会写入学生 History，不冒充真实学生 Session")
@@ -122,12 +117,14 @@ class ReplayPage(BasePage):
         )
         self._demo_label.setAlignment(Qt.AlignCenter)
         self._demo_label.setVisible(False)
-        top_layout.addWidget(self._demo_label)
 
         # ── 数据来源：近期会话 / 外部 CSV / 示例数据 ──
         source_card = Card("数据来源")
+        self._source_card = source_card
+        source_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         source_layout = QVBoxLayout()
-        source_layout.setSpacing(8)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.setSpacing(6)
 
         recent_row = QHBoxLayout()
         recent_row.setSpacing(10)
@@ -152,7 +149,6 @@ class ReplayPage(BasePage):
         self._recent_hint = QLabel("")
         self._recent_hint.setStyleSheet("color: #6B7689; font-size: 12px;")
         self._recent_hint.setWordWrap(True)
-        source_layout.addWidget(self._recent_hint)
 
         import_row = QHBoxLayout()
         import_row.setSpacing(10)
@@ -165,15 +161,19 @@ class ReplayPage(BasePage):
         self._btn_sample.setToolTip("加载内置示例数据（演示用途，不写入任何学生记录）")
         self._btn_sample.clicked.connect(self._load_sample)
         import_row.addWidget(self._btn_sample)
-        import_row.addStretch()
+        import_row.addWidget(self._demo_label, 1)
+        import_row.addWidget(self._recent_hint, 1)
         source_layout.addLayout(import_row)
 
         source_card.add_widget(self._wrap(source_layout))
-        top_layout.addWidget(source_card)
+        root.addWidget(source_card)
 
         # 回放控制
         control_card = Card("回放控制")
+        self._control_card = control_card
+        control_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         control_layout = QHBoxLayout()
+        control_layout.setContentsMargins(0, 0, 0, 0)
         control_layout.setSpacing(10)
 
         self._btn_play = QPushButton("播放")
@@ -216,87 +216,131 @@ class ReplayPage(BasePage):
         control_layout.addWidget(self._label_file)
 
         control_card.add_widget(self._wrap(control_layout))
-        top_layout.addWidget(control_card)
+        root.addWidget(control_card)
 
-        self._empty_label = QLabel("尚未加载回放数据。请从「近期会话」中选择可回放会话，或导入外部 CSV / 加载示例数据。")
-        self._empty_label.setAlignment(Qt.AlignCenter)
+        progress_card = Card("回放进度")
+        self._progress_card = progress_card
+        progress_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        progress_layout = QVBoxLayout()
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(4)
+        progress_header = QHBoxLayout()
+        self._empty_label = QLabel("尚未加载回放数据 · 请选择历史会话或导入 CSV。")
+        self._empty_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._empty_label.setStyleSheet(
-            "color: #8491A5; font-size: 13px; padding: 8px; "
-            "border: 1px dashed #344056; border-radius: 6px;"
+            "color:#8491A5;font-size:12px;"
         )
-        top_layout.addWidget(self._empty_label)
+        progress_header.addWidget(self._empty_label, 1)
+        self._label_progress = QLabel("0 / 0")
+        self._label_progress.setStyleSheet("color: #6B7689; font-size: 12px;")
+        self._label_progress.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        progress_header.addWidget(self._label_progress)
+        progress_layout.addLayout(progress_header)
 
         # 进度条
         self._slider = QSlider(Qt.Horizontal)
         self._slider.setEnabled(False)
         self._slider.valueChanged.connect(self._on_seek)
-        top_layout.addWidget(self._slider)
+        progress_layout.addWidget(self._slider)
+        progress_card.add_widget(self._wrap(progress_layout))
+        root.addWidget(progress_card)
 
-        self._label_progress = QLabel("0 / 0")
-        self._label_progress.setStyleSheet("color: #6B7689; font-size: 12px;")
-        self._label_progress.setAlignment(Qt.AlignCenter)
-        top_layout.addWidget(self._label_progress)
+        # ── 主分析区：左侧信号图，右侧模型概览、仪表和数据预览 ──
+        analysis = QWidget()
+        self._analysis_area = analysis
+        analysis.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        analysis_layout = QHBoxLayout(analysis)
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
+        analysis_layout.setSpacing(10)
 
-        # 图表区
-        charts_layout = QHBoxLayout()
+        charts = QWidget()
+        self._charts_column = charts
+        charts_layout = QVBoxLayout(charts)
+        charts_layout.setContentsMargins(0, 0, 0, 0)
         charts_layout.setSpacing(10)
 
         eeg_card = Card("原始脑电回放")
+        self._eeg_card = eeg_card
         self._eeg_plot = EEGPlotWidget()
-        self._eeg_plot.setMinimumHeight(180)
+        self._eeg_plot.setMinimumHeight(90)
+        self._eeg_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         eeg_card.add_widget(self._eeg_plot)
-        charts_layout.addWidget(eeg_card, 1)
+        charts_layout.addWidget(eeg_card, 3)
 
-        trend_card = Card("专注度 / 放松度回放")
+        trend_card = Card("专注度 / 放松度趋势")
+        self._trend_card = trend_card
         self._trend_plot = TrendPlotWidget()
-        self._trend_plot.setMinimumHeight(180)
+        self._trend_plot.setMinimumHeight(70)
+        self._trend_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         trend_card.add_widget(self._trend_plot)
-        charts_layout.addWidget(trend_card, 1)
+        charts_layout.addWidget(trend_card, 2)
+        analysis_layout.addWidget(charts, 60)
 
-        top_layout.addLayout(charts_layout)
-        splitter.addWidget(top)
-
-        # ── 下部：回放数据详情 ──
-        bottom = QWidget()
-        bottom_layout = QHBoxLayout(bottom)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(10)
+        details = QWidget()
+        self._details_column = details
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(10)
 
         # 概率面板
-        prob_card = Card("回放 - 模型概率")
+        prob_card = Card("模型概览")
+        self._model_card = prob_card
         self._prob_panel = ProbabilityPanel()
+        self._prob_panel.setVisible(False)
         prob_card.add_widget(self._prob_panel)
 
-        self._replay_pred = QLabel("预测状态：--")
+        self._model_empty = QLabel("尚未加载回放数据\n请选择历史会话或导入 CSV。")
+        self._model_empty.setAlignment(Qt.AlignCenter)
+        self._model_empty.setStyleSheet("color:#8491A5;font-size:12px;padding:6px;")
+        prob_card.add_widget(self._model_empty)
+
+        self._replay_pred = QLabel("预测状态：暂无数据")
         self._replay_pred.setObjectName("AccentLabel")
-        self._replay_pred.setStyleSheet("font-size: 14px;")
-        prob_card.add_widget(self._replay_pred)
+        self._replay_pred.setStyleSheet("font-size:12px;")
 
-        self._replay_dominant = QLabel("整场主导状态（有效预测众数）：--")
-        self._replay_dominant.setStyleSheet("font-size: 13px; color: #AAB6C8;")
-        prob_card.add_widget(self._replay_dominant)
-
-        bottom_layout.addWidget(prob_card, 1)
+        self._replay_dominant = QLabel("主导状态：暂无数据")
+        self._replay_dominant.setStyleSheet("font-size:12px;color:#AAB6C8;")
+        state_row = QHBoxLayout()
+        state_row.setContentsMargins(0, 0, 0, 0)
+        state_row.setSpacing(12)
+        state_row.addWidget(self._replay_pred, 1)
+        state_row.addWidget(self._replay_dominant, 1)
+        prob_card.add_widget(self._wrap(state_row))
 
         # 仪表
         gauge_row = QHBoxLayout()
-        att_card = Card("专注度")
+        gauge_row.setSpacing(8)
+        att_card = QFrame()
+        att_card.setObjectName("ReplayGaugeCard")
+        self._att_card = att_card
+        att_card.setMinimumHeight(92)
+        att_layout = QVBoxLayout(att_card)
+        att_layout.setContentsMargins(8, 5, 8, 5)
         self._att_gauge = ArcGauge("专注度", "#4FC3F7")
-        self._att_gauge.setFixedSize(120, 120)
-        att_card.add_widget(self._wrap_centered(self._att_gauge))
-        gauge_row.addWidget(att_card)
+        self._att_gauge.setFixedSize(82, 82)
+        att_layout.addWidget(self._att_gauge, 0, Qt.AlignCenter)
+        gauge_row.addWidget(att_card, 1)
 
-        med_card = Card("放松度")
+        med_card = QFrame()
+        med_card.setObjectName("ReplayGaugeCard")
+        self._med_card = med_card
+        med_card.setMinimumHeight(92)
+        med_layout = QVBoxLayout(med_card)
+        med_layout.setContentsMargins(8, 5, 8, 5)
         self._med_gauge = ArcGauge("放松度", "#4ADE80")
-        self._med_gauge.setFixedSize(120, 120)
-        med_card.add_widget(self._wrap_centered(self._med_gauge))
-        gauge_row.addWidget(med_card)
-
-        bottom_layout.addLayout(gauge_row, 1)
+        self._med_gauge.setFixedSize(82, 82)
+        med_layout.addWidget(self._med_gauge, 0, Qt.AlignCenter)
+        gauge_row.addWidget(med_card, 1)
+        att_card.setVisible(False)
+        med_card.setVisible(False)
+        prob_card.add_widget(self._wrap(gauge_row))
+        details_layout.addWidget(prob_card, 2)
 
         # 数据表
         table_card = Card("回放数据预览")
+        self._table_card = table_card
         table_layout = QVBoxLayout()
+        table_layout.setContentsMargins(0, 0, 0, 0)
         self._table = QTableWidget()
         self._table.setColumnCount(5)
         self._table.setHorizontalHeaderLabels(["时间", "原始脑电", "专注度", "放松度", "预测"])
@@ -304,15 +348,20 @@ class ReplayPage(BasePage):
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.setMinimumHeight(68)
+        self._table.verticalHeader().setDefaultSectionSize(24)
         table_layout.addWidget(self._table)
         table_card.add_widget(self._wrap(table_layout))
-        bottom_layout.addWidget(table_card, 2)
+        details_layout.addWidget(table_card, 1)
+        analysis_layout.addWidget(details, 40)
+        root.addWidget(analysis, 1)
 
-        splitter.addWidget(bottom)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
-
-        self.content_layout.addWidget(splitter)
+        self.setStyleSheet(self.styleSheet() + """
+            QFrame#ReplayGaugeCard {
+                background:#172235;border:1px solid #27364D;border-radius:8px;
+            }
+            QFrame#ReplayGaugeCard QLabel { color:#AAB6C8;font-size:11px; }
+        """)
 
     def _wrap(self, layout) -> QWidget:
         w = QWidget()
@@ -367,6 +416,7 @@ class ReplayPage(BasePage):
             self._data = combined
             self._is_sample = False
             self._demo_label.setVisible(False)
+            self._recent_hint.setVisible(True)
             self._label_file.setText(f"已替换为 {len(paths)} 个文件，共 {len(self._data)} 行")
             self._init_playback()
             if missing_predictions:
@@ -498,7 +548,10 @@ class ReplayPage(BasePage):
         self._refresh_recent_sessions()
 
     def _open_sessions_folder(self):
-        folder = self._sessions_dir()
+        # 与 History/Settings 统一：优先 SessionStore 当前真实根目录。
+        # （_sessions_dir() 仍按服务配置解析，专用于回放数据列表。）
+        from services.session_store import resolve_sessions_root
+        folder = resolve_sessions_root(self.state, self.service)
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
@@ -522,6 +575,7 @@ class ReplayPage(BasePage):
         reader = csv.DictReader(io.StringIO(csv_text))
         self._data = list(reader)
         self._is_sample = True
+        self._recent_hint.setVisible(False)
         self._demo_label.setVisible(True)
         self._label_file.setText(f"已加载示例数据（演示用途，不写入学生 History），共 {len(self._data)} 行")
         self._init_playback()
@@ -540,6 +594,7 @@ class ReplayPage(BasePage):
         self._btn_stop.setEnabled(False)
         self._btn_clear.setEnabled(True)
         self._trend_plot.reset()
+        self._model_empty.setVisible(False)
         self._update_frame(0)
         self._populate_table()
         self._update_dominant_state()
@@ -552,6 +607,7 @@ class ReplayPage(BasePage):
         self._index = 0
         self._is_sample = False
         self._demo_label.setVisible(False)
+        self._recent_hint.setVisible(True)
         self._empty_label.setVisible(True)
         self._label_file.setText("未加载文件")
         self._label_progress.setText("0 / 0")
@@ -571,13 +627,18 @@ class ReplayPage(BasePage):
             self._eeg_plot._curve.setData(self._eeg_plot._x, self._eeg_plot._data)
         self._att_gauge.set_value(0)
         self._med_gauge.set_value(0)
+        self._att_card.setVisible(False)
+        self._med_card.setVisible(False)
+        self._prob_panel.setVisible(False)
+        self._model_empty.setText("尚未加载回放数据\n请选择历史会话或导入 CSV。")
+        self._model_empty.setVisible(True)
         for bar in self._prob_panel._bars.values():
             bar.set_value(0.0)
             bar.set_dimmed(True)
         self._prob_panel._confidence_label.setText("信号质量：--")
         self._prob_panel._warning_label.setVisible(False)
-        self._replay_pred.setText("预测状态：--")
-        self._replay_dominant.setText("整场主导状态（有效预测众数）：--")
+        self._replay_pred.setText("预测状态：暂无数据")
+        self._replay_dominant.setText("主导状态：暂无数据")
 
     def _update_dominant_state(self):
         votes = []
@@ -594,14 +655,14 @@ class ReplayPage(BasePage):
                 seen_inferences.add(key)
             votes.append(pred)
         if not votes:
-            self._replay_dominant.setText("整场主导状态（有效预测众数）：--（无模型预测）")
+            self._replay_dominant.setText("主导状态：暂无数据（原文件无模型预测）")
             return
         counts = Counter(votes)
         highest = max(counts.values())
         tied = {name for name, count in counts.items() if count == highest}
         dominant = next(name for name in reversed(votes) if name in tied)
         self._replay_dominant.setText(
-            f"整场主导状态（有效预测众数）：{CLASS_DISPLAY.get(dominant, dominant)} · {highest}/{len(votes)}"
+            f"主导状态：{CLASS_DISPLAY.get(dominant, dominant)} · {highest}/{len(votes)}"
         )
 
     def _populate_table(self):
@@ -681,6 +742,8 @@ class ReplayPage(BasePage):
         row = self._data[idx]
 
         raw = self._safe_int(row, "raw")
+        has_attention = row.get("attention") not in (None, "")
+        has_meditation = row.get("meditation") not in (None, "")
         att = self._safe_int(row, "attention")
         med = self._safe_int(row, "meditation")
         pp = self._safe_float(row, "prob_positive")
@@ -692,22 +755,33 @@ class ReplayPage(BasePage):
         self._trend_plot.push_values(att, med)
         self._att_gauge.set_value(att)
         self._med_gauge.set_value(med)
+        self._att_card.setVisible(has_attention)
+        self._med_card.setVisible(has_meditation)
 
         # 直接操作概率面板的条形组件，绕过 DashboardState
         # （回放模式下 DashboardState 的 prob_* 字段为 None，不能通过
         #   _prob_panel.update_state(state) 更新）
-        self._prob_panel._bars["positive"].set_value(pp)
-        self._prob_panel._bars["neutral"].set_value(pn)
-        self._prob_panel._bars["negative"].set_value(ng)
-        for bar in self._prob_panel._bars.values():
-            bar.set_dimmed(False)
-        self._prob_panel._confidence_label.setText("回放模式 · 信号可信度：原文件未提供")
-        self._prob_panel._confidence_label.setStyleSheet(
-            "font-size: 12px; color: #6B7689; padding-top: 4px;"
+        has_probabilities = all(
+            row.get(key) not in (None, "")
+            for key in ("prob_positive", "prob_neutral", "prob_negative")
         )
-        self._prob_panel._warning_label.setVisible(False)
+        self._prob_panel.setVisible(has_probabilities)
+        self._model_empty.setVisible(not has_probabilities)
+        if has_probabilities:
+            self._prob_panel._bars["positive"].set_value(pp)
+            self._prob_panel._bars["neutral"].set_value(pn)
+            self._prob_panel._bars["negative"].set_value(ng)
+            for bar in self._prob_panel._bars.values():
+                bar.set_dimmed(False)
+            self._prob_panel._confidence_label.setText("回放模式 · 信号可信度：原文件未提供")
+            self._prob_panel._confidence_label.setStyleSheet(
+                "font-size: 12px; color: #6B7689; padding-top: 4px;"
+            )
+            self._prob_panel._warning_label.setVisible(False)
+        else:
+            self._model_empty.setText("当前回放数据不含模型概率")
 
-        display = CLASS_DISPLAY.get(pred, pred) if pred else "--"
+        display = CLASS_DISPLAY.get(pred, pred) if pred else "暂无数据"
         self._replay_pred.setText(f"预测状态：{display}")
 
         self._label_progress.setText(

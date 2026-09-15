@@ -19,6 +19,29 @@ SESSION_METADATA_FILENAME = "session.json"
 DEMO_DIRECTORY_NAME = "_demo"
 
 
+def resolve_sessions_root(state, service=None) -> Path:
+    """UI"打开会话文件夹"统一入口：返回 SessionStore 当前真实根目录。
+
+    解析顺序（与持久化完全一致，不在 UI 层重新硬编码路径）：
+    1. DashboardState 当前 SessionStore 实例的 root；
+    2. DashboardState 配置的 _sessions_dir（恒为绝对路径）；
+    3. 回退：service.sessions_dir，相对路径基于包根目录解析
+       （历史遗留行为：曾基于进程 CWD 解析，导致打开了
+       ui_prototype/data/sessions 空目录）。
+    """
+    store = getattr(state, "_session_store", None)
+    root = getattr(store, "root", None) if store is not None else None
+    if root is not None:
+        return Path(root)
+    configured = getattr(state, "_sessions_dir", None)
+    if configured is not None:
+        return Path(configured)
+    folder = Path(getattr(service, "sessions_dir", "data/sessions"))
+    if not folder.is_absolute():
+        folder = Path(__file__).resolve().parents[2] / folder
+    return folder.resolve()
+
+
 class SessionStore:
     """Persist and index versioned session dictionaries.
 
