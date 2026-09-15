@@ -13,6 +13,7 @@ class TrendPlotWidget(QWidget):
     """Attention + Meditation 双曲线趋势图。"""
 
     MAX_POINTS = 900  # 90秒 @ 10Hz
+    SAMPLE_RATE_HZ = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -72,20 +73,28 @@ class TrendPlotWidget(QWidget):
         self._att_data = np.full(self.MAX_POINTS, np.nan, dtype=np.float32)
         self._med_data = np.full(self.MAX_POINTS, np.nan, dtype=np.float32)
         self._x = np.linspace(-90, 0, self.MAX_POINTS, dtype=np.float32)
+        self._point_count = 0
 
     def push_values(self, attention: int, meditation: int):
         self._att_data = np.roll(self._att_data, -1)
         self._att_data[-1] = attention
         self._med_data = np.roll(self._med_data, -1)
         self._med_data[-1] = meditation
+        self._point_count = min(self.MAX_POINTS, self._point_count + 1)
         self._att_curve.setData(self._x, self._att_data)
         self._med_curve.setData(self._x, self._med_data)
+        # 尚未积累满 90 秒时，用已有时长作为横轴范围，让曲线完整利用
+        # 图表宽度；积累满后稳定为滚动的 -90～0 秒窗口。
+        duration = max(1.0, self._point_count / self.SAMPLE_RATE_HZ)
+        self._plot.setXRange(-duration, 0, padding=0.01)
 
     def reset(self):
         self._att_data = np.full(self.MAX_POINTS, np.nan, dtype=np.float32)
         self._med_data = np.full(self.MAX_POINTS, np.nan, dtype=np.float32)
+        self._point_count = 0
         self._att_curve.setData(self._x, self._att_data)
         self._med_curve.setData(self._x, self._med_data)
+        self._plot.setXRange(-90, 0, padding=0.01)
 
 
 class ProbabilityTrendWidget(QWidget):

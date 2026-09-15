@@ -31,6 +31,7 @@ from services.adaptive_feedback_engine import (
     AdaptiveDecision,
     apply_adaptive_decision,
 )
+from smart_learning_app.live_service import SessionCsvWriter
 
 
 # 阈值常量保留供外部引用（引擎内部也使用相同值）
@@ -68,10 +69,16 @@ class MockDataService(QObject):
 
         # 定时器：更新会话时间和预热进度
         self._tick_timer = QTimer(self)
-        self._tick_timer.setInterval(200)  # 5 Hz
+        # 趋势缓冲和横轴统一按 MOCK_UI_REFRESH_HZ（10 Hz）换算。
+        # 这里曾固定为 200 ms（5 Hz），导致运行 90 秒后曲线仍只占
+        # -45～0 秒，看起来像图表只显示了半边。
+        self._tick_timer.setInterval(round(1000 / MOCK_UI_REFRESH_HZ))
         self._tick_timer.timeout.connect(self._on_tick)
 
         self._session_running = False
+        self._session_writer: SessionCsvWriter | None = None
+        self._session_sample_index = 0
+        self._session_started_unix = 0.0
         self._warmup_running = False
         self._last_tick_time = 0.0
         self._demo_started_at = time.monotonic()
@@ -104,7 +111,16 @@ class MockDataService(QObject):
 
     def start_session(self):
         self.state.session_seconds = 0.0
-        metadata_path = self.state.begin_session(source="mock", demo=True)
+        if self._session_writer is not None:
+            self.end_session(status="interrupted")
+        metadata_path = self.state.begin_session(
+            source="mock", demo=True, data_files={"raw_csv": "session.csv"}
+        )
+        csv_path = self.sessions_dir / "_demo" / self.state.run_id / "session.csv"
+        self._session_writer = SessionCsvWriter(csv_path)
+        self._session_writer.start()
+        self._session_sample_index = 0
+        self._session_started_unix = time.time()
         self._session_running = True
         if not self._tick_timer.isActive():
             self._tick_timer.start()
@@ -121,7 +137,17 @@ class MockDataService(QObject):
     def end_session(self, status: str = "completed"):
         self._session_running = False
         self._warmup_running = False
-        metadata_path = self.state.finalize_session(status=status)
+        writer, self._session_writer = self._session_writer, None
+        if writer is not None and not writer.close():
+            self.state.last_session_save_error = str(writer.error or "演示CSV保存失败")
+            self.state.finalize_session(
+                status="save_error", data_files={"raw_csv": "session.csv"}
+            )
+            self.state.feedback_text = "演示回放数据保存失败，请检查会话目录写入权限。"
+            return None
+        metadata_path = self.state.finalize_session(
+            status=status, data_files={"raw_csv": "session.csv"}
+        )
         if metadata_path is None and self.state.last_session_save_error:
             self.state.feedback_text = (
                 "会话记录保存失败，请检查 data/sessions 文件夹写入权限。"
@@ -148,6 +174,24 @@ class MockDataService(QObject):
         s.quality_level = "trusted"
         s.quality_reasons = ["教学演示数据有效"]
         s.pipeline_state = "ready"
+        if self._session_running and self._session_writer is not None:
+            self._session_sample_index += 1
+            self._session_writer.append([{
+                "timestamp_unix": snap.timestamp or time.time(),
+                "signal_time_seconds": max(0.0, time.time() - self._session_started_unix),
+                "raw_sample_index": self._session_sample_index,
+                "raw": snap.raw,
+                "attention": snap.attention,
+                "meditation": snap.meditation,
+                "poor_signal": snap.poor_signal,
+                "prob_positive": s.prob_positive,
+                "prob_neutral": s.prob_neutral,
+                "prob_negative": s.prob_negative,
+                "predicted_class": s.predicted_state or "",
+                "confidence": s.confidence,
+                "quality_level": s.quality_level,
+                "inference_index": len(s._prob_history),
+            }])
 
     def _on_acq_status(self, status: dict):
         s = self.state

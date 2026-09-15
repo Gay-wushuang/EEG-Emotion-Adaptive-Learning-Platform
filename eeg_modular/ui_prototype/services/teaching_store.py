@@ -279,8 +279,9 @@ class StudentRuntimeRegistry:
                 "negative": getattr(state, "prob_negative", None),
             },
             "raw_eeg": raw[::display_step][-128:],
-            "attention_history": list(getattr(state, "_attention_history", []))[-300:],
-            "meditation_history": list(getattr(state, "_meditation_history", []))[-300:],
+            # DashboardState 以 10 Hz 保存趋势点；90 秒窗口需要 900 点。
+            "attention_history": list(getattr(state, "_attention_history", []))[-900:],
+            "meditation_history": list(getattr(state, "_meditation_history", []))[-900:],
             "recent_events": [
                 event.to_dict() for event in getattr(state, "_events", [])
                 if getattr(event, "session_id", "") == getattr(state, "run_id", "")

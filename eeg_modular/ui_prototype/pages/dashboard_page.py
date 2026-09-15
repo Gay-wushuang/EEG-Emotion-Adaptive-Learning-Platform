@@ -873,24 +873,32 @@ class DashboardPage(BasePage):
         trend_card = Card("实时学习趋势")
         self._teacher_trend_card = trend_card
         trend_body = QVBoxLayout(); trend_body.setSpacing(6)
-        trend_hint = QLabel("最近 90 秒 · Attention / Meditation / 学习状态")
-        trend_hint.setStyleSheet("color:#8491A5;font-size:11px;"); trend_body.addWidget(trend_hint)
-        self._teacher_eeg_plot = EEGPlotWidget(); self._teacher_eeg_plot.setMaximumHeight(72)
-        # 教师页的 EEG 图高度较紧凑：缩短纵轴标题并固定轴宽，
-        # 避免中文纵标题与刻度互相挤压，不改变绘图数据。
+        self._teacher_trend_hint = QLabel("设备波形与最近 90 秒的专注度 / 放松度")
+        self._teacher_trend_hint.setStyleSheet("color:#8491A5;font-size:11px;")
+        trend_body.addWidget(self._teacher_trend_hint)
+        self._teacher_eeg_plot = EEGPlotWidget()
+        self._teacher_eeg_plot.setMinimumHeight(96)
+        self._teacher_eeg_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 为坐标轴保留稳定宽度，避免 Windows 字体缩放时标题与刻度重叠。
         eeg_axis = self._teacher_eeg_plot._plot.getAxis("left")
         eeg_axis.setLabel("幅度", color="#6B7689", **{"font-size": "9px"})
         eeg_axis.setWidth(42)
         self._teacher_eeg_empty = QLabel("等待学生实时数据")
         self._teacher_eeg_empty.setAlignment(Qt.AlignCenter); self._teacher_eeg_empty.setStyleSheet("color:#8491A5;")
         self._teacher_eeg_stack = QStackedWidget()
-        self._teacher_eeg_stack.setMaximumHeight(72)
+        self._teacher_eeg_stack.setMinimumHeight(96)
+        self._teacher_eeg_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._teacher_eeg_stack.addWidget(self._teacher_eeg_plot)
         self._teacher_eeg_stack.addWidget(self._teacher_eeg_empty)
         eeg_wrap = QVBoxLayout(); eeg_wrap.setSpacing(2); eeg_wrap.addWidget(QLabel("EEG 最近 5 秒"))
         eeg_wrap.addWidget(self._teacher_eeg_stack)
         trend_body.addLayout(eeg_wrap)
-        self._teacher_trend_plot = TrendPlotWidget(); self._teacher_trend_plot.setMinimumHeight(145)
+        separator = QFrame(); separator.setFrameShape(QFrame.HLine); separator.setObjectName("HSeparator")
+        trend_body.addWidget(separator)
+        self._teacher_metrics_caption = QLabel("专注度 / 放松度（最近 90 秒）")
+        self._teacher_metrics_caption.setStyleSheet("color:#AAB6C8;font-size:11px;")
+        trend_body.addWidget(self._teacher_metrics_caption)
+        self._teacher_trend_plot = TrendPlotWidget(); self._teacher_trend_plot.setMinimumHeight(170)
         self._teacher_trend_empty = QLabel("等待学生实时数据")
         self._teacher_trend_empty.setAlignment(Qt.AlignCenter); self._teacher_trend_empty.setStyleSheet("color:#8491A5;")
         # 空状态与图表互斥显示：等待文字居中时不再与坐标轴同层。
@@ -917,7 +925,12 @@ class DashboardPage(BasePage):
         metrics.addWidget(self._teacher_att,1,0); metrics.addWidget(self._teacher_med,1,1)
         metrics.addWidget(self._teacher_negative,2,0,1,2); metrics.addWidget(self._teacher_state_quality,3,0,1,2)
         state_body.addLayout(metrics); state_card.add_widget(self._wrap(state_body)); main.addWidget(state_card, 3)
-        self._teacher_main_row.setMaximumHeight(296); root.addWidget(self._teacher_main_row, 1)
+        # 390px 足以完整容纳两张图及其坐标轴，同时限制图表的纵向扩张。
+        # 若只移除原 296px 上限，Expanding 图表会吞掉整页高度，造成教师页
+        # 顶部被滚出视口、右侧状态字段被异常拉散。
+        self._teacher_main_row.setFixedHeight(390)
+        self._teacher_main_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        root.addWidget(self._teacher_main_row, 1)
 
         self._teacher_bottom_row = QWidget()
         bottom = QHBoxLayout(self._teacher_bottom_row); bottom.setContentsMargins(0,0,0,0); bottom.setSpacing(8)
@@ -1310,6 +1323,8 @@ class DashboardPage(BasePage):
             self._teacher_negative.setText("负性趋势持续：--")
             self._teacher_state_quality.setText("当前信号质量：暂无数据")
             self._teacher_advice_text.setText("暂无有效建议")
+            self._teacher_trend_card.set_title("实时状态趋势")
+            self._teacher_trend_hint.setText("设备波形与最近 90 秒的专注度 / 放松度")
             self._teacher_process_text.setText(
                 "当前任务状态：暂无进行中任务\n最近事件：暂无\n"
                 "最近更新时间：--\n智能建议：暂无有效建议"
@@ -1392,6 +1407,14 @@ class DashboardPage(BasePage):
         updated = snapshot.get("updated_at") or 0
         updated_text = time.strftime("%H:%M:%S", time.localtime(updated)) if updated else "--"
         task_name = snapshot.get("task_name") or "暂无进行中任务"
+        active_task = bool(snapshot.get("active_task_id") or snapshot.get("task_id"))
+        self._teacher_trend_card.set_title(
+            "实时学习趋势" if active_task else "实时状态趋势"
+        )
+        self._teacher_trend_hint.setText(
+            "学习任务中的设备波形与最近 90 秒指标"
+            if active_task else "当前未进行学习任务；以下为设备实时观察数据"
+        )
         self._teacher_context_values["live"].setText("在线观察中" if online else "学生端未运行")
         self._teacher_context_values["elapsed"].setText(
             f"{elapsed // 3600:02d}:{(elapsed % 3600) // 60:02d}:{elapsed % 60:02d}"

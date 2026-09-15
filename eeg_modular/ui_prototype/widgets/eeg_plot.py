@@ -51,24 +51,31 @@ class EEGPlotWidget(QWidget):
 
         layout.addWidget(self._plot)
 
-        self._data = np.zeros(self.DISPLAY_POINTS, dtype=np.float32)
+        self._data = np.full(self.DISPLAY_POINTS, np.nan, dtype=np.float32)
         self._x = np.linspace(-self.DISPLAY_SECONDS, 0, self.DISPLAY_POINTS)
         self._scale = 250.0
+        self._point_count = 0
 
     def push_value(self, value: float):
         self._data = np.roll(self._data, -1)
         self._data[-1] = value
+        self._point_count = min(self.DISPLAY_POINTS, self._point_count + 1)
         self._curve.setData(self._x, self._data)
+        duration = max(0.1, self._point_count / (self.DISPLAY_POINTS / self.DISPLAY_SECONDS))
+        self._plot.setXRange(-duration, 0, padding=0.01)
 
     def reset(self):
-        self._data = np.zeros(self.DISPLAY_POINTS, dtype=np.float32)
+        self._data = np.full(self.DISPLAY_POINTS, np.nan, dtype=np.float32)
+        self._point_count = 0
         self._curve.setData(self._x, self._data)
+        self._plot.setXRange(-self.DISPLAY_SECONDS, 0, padding=0.01)
 
     def push_buffer(self, buffer):
         """直接用 deque/list 替换全部数据。"""
         arr = np.asarray(buffer, dtype=np.float32)[-(512 * self.DISPLAY_SECONDS):]
         if not arr.size:
             return
+        duration = min(self.DISPLAY_SECONDS, arr.size / 512.0)
         # Display processing only: remove DC offset and average adjacent Raw
         # samples so a 512 Hz stream remains readable on a ~500 px chart.
         arr = arr - float(np.median(arr))
@@ -84,7 +91,9 @@ class EEGPlotWidget(QWidget):
         target_scale = float(np.clip(robust_peak * 1.25, 100.0, 1000.0))
         self._scale = 0.90 * self._scale + 0.10 * target_scale
         self._plot.setYRange(-self._scale, self._scale, padding=0.02)
-        self._curve.setData(self._x, self._data)
+        visible_x = np.linspace(-max(duration, 1 / 512), 0, arr.size)
+        self._curve.setData(visible_x, arr)
+        self._plot.setXRange(-max(duration, 0.1), 0, padding=0.01)
 
     def push_display_points(self, points):
         """Stretch an already-downsampled remote snapshot across the viewport."""
@@ -104,6 +113,7 @@ class EEGPlotWidget(QWidget):
         self._scale = float(np.clip(robust_peak * 1.25, 100.0, 1000.0))
         self._plot.setYRange(-self._scale, self._scale, padding=0.02)
         self._curve.setData(self._x, self._data)
+        self._plot.setXRange(-self.DISPLAY_SECONDS, 0, padding=0.01)
 
     def set_dimmed(self, dimmed: bool):
         color = QColor("#3A4458") if dimmed else QColor("#4FC3F7")
