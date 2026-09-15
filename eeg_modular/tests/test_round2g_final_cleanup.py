@@ -143,6 +143,8 @@ class Round2GFinalCleanupTest(unittest.TestCase):
         self.assertEqual(page._title_label.text(), "诊断记录")
         self.assertEqual(page._timer_card._title_label.text(), "监测时长")
         self.assertEqual(page._btn_start_session.text(), "开始本机监测")
+        self.assertTrue(page._session_relation.isHidden())
+        self.assertTrue(page._btn_start_session.isHidden())
         self.assertEqual(page._btn_task_start.text(), "开始监测")
         self.assertEqual(page._btn_task_stop.text(), "结束监测")
         self.assertEqual(page._btn_task_pause.text(), "暂停监测")

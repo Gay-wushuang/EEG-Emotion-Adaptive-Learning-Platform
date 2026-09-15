@@ -790,7 +790,11 @@ class TaskPage(BasePage):
             self._hierarchy_card.setVisible(not student and not teacher)
             self._timer_card.setVisible(not teacher)
             self._event_card.setVisible(teacher or self._role == "research")
-            self._btn_start_session.setVisible(self._role == "research")
+            # 管理端只保留“开始监测”这一个用户入口。该按钮会在需要时
+            # 自动创建底层会话；若再展示“开始本机监测”，用户点击后只会
+            # 建立会话而不会启动计时，看起来像按钮失效。
+            self._session_relation.setVisible(False)
+            self._btn_start_session.setVisible(False)
             self._btn_task_start.setVisible(not teacher)
             self._btn_task_stop.setVisible(not teacher)
             self._btn_task_pause.setVisible(not teacher)
