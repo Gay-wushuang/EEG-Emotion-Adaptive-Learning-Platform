@@ -104,13 +104,15 @@ class AdaptiveDecision:
         new_difficulty: str,
         reason: str,
     ) -> "AdaptiveDecision":
-        prev_disp = DIFFICULTY_DISPLAY.get(old_difficulty, old_difficulty)
-        new_disp = DIFFICULTY_DISPLAY.get(new_difficulty, new_difficulty)
         return AdaptiveDecision(
             action=AdaptiveAction.REDUCE_DIFFICULTY,
             reason=reason,
-            feedback_text=f"当前任务已从\"{prev_disp}\"调整为\"{new_disp}\"",
+            feedback_text=(
+                "检测到持续低专注/负性状态趋势，建议适当降低后续学习难度"
+                "或调整学习节奏。当前任务难度保持不变。"
+            ),
             should_emit_event=True,
+            # Advisory hint only; applying the decision never changes the task.
             new_difficulty=new_difficulty,
         )
 
@@ -366,10 +368,8 @@ def apply_adaptive_decision(state, decision: AdaptiveDecision) -> None:
 
     now = time.time()
 
-    # ── 写入 DashboardState ──
-    if decision.new_difficulty:
-        state.task_difficulty = decision.new_difficulty
-
+    # Decision support only: Assignment, TaskRecord and runtime difficulty
+    # remain teacher-controlled. new_difficulty is advisory metadata.
     state.adaptive_action = decision.action
     state.adaptive_action_reason = decision.reason
     state.adaptive_feedback_text = decision.feedback_text
@@ -377,21 +377,8 @@ def apply_adaptive_decision(state, decision: AdaptiveDecision) -> None:
 
     # ── 构造事件（一次决策只产生一次 intervention event）──
     if decision.action == AdaptiveAction.REDUCE_DIFFICULTY:
-        if decision.new_difficulty:
-            prev_diff = (
-                DIFFICULTY_HARD
-                if decision.new_difficulty == DIFFICULTY_MEDIUM
-                else DIFFICULTY_MEDIUM
-            )
-            prev_disp = DIFFICULTY_DISPLAY.get(prev_diff, prev_diff)
-            new_disp = DIFFICULTY_DISPLAY.get(
-                decision.new_difficulty, decision.new_difficulty
-            )
-            label = "自适应降低任务难度"
-            note = f"{prev_disp} -> {new_disp}；原因：{decision.reason}"
-        else:
-            label = "自适应降低任务难度"
-            note = f"原因：{decision.reason}"
+        label = "AI建议：降低后续学习负荷"
+        note = f"建议调整后续难度或学习节奏（未自动修改当前任务）；原因：{decision.reason}"
     elif decision.action == AdaptiveAction.SUGGEST_BREAK:
         label = "建议短暂休息"
         note = "当前已为最低任务难度，进入休息建议"

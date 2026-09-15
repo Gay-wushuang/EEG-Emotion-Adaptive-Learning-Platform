@@ -18,6 +18,13 @@ from widgets.card import Card
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _safe_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 class SettingsPage(BasePage):
     def __init__(self, state, service):
         self.state = state
@@ -109,6 +116,36 @@ class SettingsPage(BasePage):
             ("选择性识别", "90.20%（仅高置信度接受窗口；覆盖率18.41%）"),
         ])
         model.add_widget(self._wrap(grid))
+        package_dir = PACKAGE_ROOT / "production_baseline_v1"
+        required = (
+            "model.pt", "baseline_contract.json", "class_mapping.json",
+            "confidence_policy.json", "scaler_filtered.joblib",
+            "scaler_bandpower.joblib", "checksums.sha256",
+        )
+        missing = [name for name in required if not (package_dir / name).is_file()]
+        appdata_root = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        app_dir = appdata_root / "EEGLearningAssistant"
+        legacy_encoder = PACKAGE_ROOT / "features" / "label_encoder.joblib"
+        resource_lines = [
+            f"模型文件：{'正常' if (package_dir / 'model.pt').is_file() else '缺失'} · {package_dir / 'model.pt'}",
+            f"配置文件：{'正常' if not missing else '缺失'} · {package_dir}",
+            f"History目录：{'正常' if _safe_exists(self._sessions_dir()) else '待创建'} · {self._sessions_dir()}",
+            f"Baseline结果：{'正常' if _safe_exists(app_dir / 'baseline_results.json') else '待创建'} · {app_dir / 'baseline_results.json'}",
+            f"SQLite协调库：{'正常' if _safe_exists(app_dir / 'coordination.sqlite3') else '待创建'} · {app_dir / 'coordination.sqlite3'}",
+        ]
+        assets = QLabel(
+            "生产必需资产\n状态：" + ("生产运行资产完整" if not missing else "生产资产缺失 " + "、".join(missing))
+            + "\n" + "\n".join(resource_lines)
+            + "\n\n兼容资产\nLegacy Label Encoder："
+            + ("已安装" if legacy_encoder.is_file() else "未安装")
+            + f" · {legacy_encoder}"
+            + "\n说明：仅旧兼容链路需要，当前 Production Baseline v1 不依赖，不影响正式推理。"
+        )
+        assets.setWordWrap(True)
+        assets.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        assets.setStyleSheet("color: #8FA0B8; font-size: 12px;")
+        self._asset_diagnostics = assets
+        model.add_widget(assets)
         right.addWidget(model)
 
         system = Card("运行环境")
@@ -162,7 +199,9 @@ class SettingsPage(BasePage):
         return folder.resolve()
 
     def _open_sessions_folder(self):
-        folder = self._sessions_dir()
+        # 与 History/Replay 统一：优先 SessionStore 当前真实根目录。
+        from services.session_store import resolve_sessions_root
+        folder = resolve_sessions_root(self.state, self.service)
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
@@ -180,7 +219,7 @@ class SettingsPage(BasePage):
         quality = {"trusted": "可信", "warning": "警告", "rejected": "不合格"}
         self._diag_labels["connector"].setText(connector.get(state.connector_status, state.connector_status))
         self._diag_labels["device"].setText(device.get(state.device_status, state.device_status))
-        source = {"live": "实时设备", "mock": "模拟数据", "replay": "历史回放"}
+        source = {"live": "实时采集", "mock": "教学演示数据", "replay": "离线数据回放"}
         self._diag_labels["source"].setText(source.get(state.mode, state.mode))
         self._diag_labels["sample_rate"].setText(
             "尚无Raw数据" if state.sample_rate_hz is None else f"{state.sample_rate_hz:.0f} Hz"
@@ -199,10 +238,15 @@ class SettingsPage(BasePage):
         self._diag_labels["inference"].setText(
             pipeline_display.get(pipeline, "就绪" if state.inference_eligible else "未就绪")
         )
+        model_status = str(getattr(state, "model_status", "") or "").upper()
         model_user = str(getattr(state, "model_error_user", "") or "")
         model_detail = str(getattr(state, "model_error_detail", "") or "")
         self._diag_labels["model"].setText(
-            model_user or ("故障" if pipeline == "error" else "Production Baseline v1 可用")
+            model_user or {
+                "LOADING": "Production Baseline v1 加载中",
+                "READY": "Production Baseline v1 可用",
+                "FAILED": "Production Baseline v1 故障",
+            }.get(model_status, "故障" if pipeline == "error" else "Production Baseline v1 可用")
         )
         self._diag_labels["model_detail"].setText(model_detail or "--")
         self._diag_labels["experiment"].setText(str(getattr(state, "run_id", "--")))

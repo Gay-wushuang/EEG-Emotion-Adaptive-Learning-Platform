@@ -21,7 +21,7 @@
 
 ### 第一步：启动 ThinkGear Connector
 
-1. 打开文件夹：`d:\proegg\eeg_modular\ThinkGear Connector\`
+1. 打开项目中的 `eeg_modular\ThinkGear Connector\` 文件夹
 2. 双击运行：`ThinkGear Connector.exe`
 3. 等待程序启动，任务栏会出现图标
 

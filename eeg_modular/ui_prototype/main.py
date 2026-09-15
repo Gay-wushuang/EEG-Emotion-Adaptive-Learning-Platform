@@ -8,7 +8,7 @@
     python main.py --skip-login --role student --user-id test_01 --auto-exit-ms 3000
 
 Mock 模式默认启用，无需连接真实设备。
-正常启动始终先显示本地 ID 登录和使用端选择；--skip-login 仅供测试/开发。
+正常启动只显示本地账号登录，使用端由账号 ID 前缀固定；--skip-login 仅供测试/开发。
 """
 
 from __future__ import annotations
@@ -31,7 +31,9 @@ from PySide6.QtWidgets import QApplication, QDialog
 from login_dialog import LoginDialog
 from main_window import MainWindow
 from services.font_loader import ensure_chinese_font
-from services.identity_store import IdentityStore, ROLE_RESEARCH, VALID_ROLES
+from services.identity_store import (
+    IdentityStore, ROLE_RESEARCH, VALID_ROLES, role_for_user_id,
+)
 
 
 def parse_args():
@@ -57,11 +59,11 @@ def parse_args():
         "--role",
         choices=VALID_ROLES,
         default=ROLE_RESEARCH,
-        help="--skip-login 时使用的端角色（默认 research）",
+        help="兼容参数；实际角色始终由 --user-id 前缀确定",
     )
     parser.add_argument(
         "--user-id",
-        default="test_user",
+        default="admin_test",
         help="--skip-login 时注入的本地用户 ID",
     )
     parser.add_argument(
@@ -111,7 +113,7 @@ def main():
         identity_kwargs = {
             "user_id": user_id,
             "user_name": user_name,
-            "role": args.role,
+            "role": role_for_user_id(user_id),
         }
     else:
         login = LoginDialog(identity_store)

@@ -28,7 +28,7 @@ from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QStackedWidget, QButtonGroup, QStatusBar,
-    QFrame, QSizePolicy, QSpacerItem, QMessageBox,
+    QFrame, QSizePolicy, QSpacerItem, QMessageBox, QComboBox,
 )
 
 from services.dashboard_state import (
@@ -47,7 +47,9 @@ from services.identity_store import (
     ROLE_STUDENT,
     ROLE_TEACHER,
     VALID_ROLES,
+    role_for_user_id,
 )
+from services.teaching_store import StudentRuntimeRegistry, TeacherObserverService
 
 from pages.welcome_page import WelcomePage
 from pages.baseline_page import BaselinePage
@@ -68,19 +70,40 @@ NAV_ITEMS = [
     ("task", "任务与标记", "4"),
     ("history", "历史与报告", "5"),
     ("settings", "设置与诊断", "6"),
-    ("replay", "CSV回放", "7"),
+    ("replay", "离线回放", "7"),
 ]
 
 ROLE_PAGE_KEYS = {
-    ROLE_STUDENT: ("welcome", "baseline", "dashboard"),
-    ROLE_TEACHER: ("baseline", "dashboard", "task", "history"),
+    ROLE_STUDENT: ("welcome", "baseline", "dashboard", "task", "history"),
+    ROLE_TEACHER: ("welcome", "baseline", "dashboard", "task", "history"),
     ROLE_RESEARCH: tuple(item[0] for item in NAV_ITEMS),
 }
 
 ROLE_DEFAULT_PAGE = {
     ROLE_STUDENT: "welcome",
-    ROLE_TEACHER: "baseline",
+    ROLE_TEACHER: "welcome",
     ROLE_RESEARCH: "welcome",
+}
+
+ROLE_NAV_LABELS = {
+    ROLE_STUDENT: {
+        "welcome": "欢迎与设备检查", "baseline": "基线采集", "dashboard": "实时学习状态",
+        "task": "我的学习任务", "history": "历史与报告",
+    },
+    ROLE_TEACHER: {
+        "welcome": "教师工作台", "baseline": "学生基线", "dashboard": "学生实时观察",
+        "task": "任务发布与观察", "history": "学生历史与报告",
+    },
+    ROLE_RESEARCH: {
+        "welcome": "系统概览", "baseline": "本机设备诊断", "dashboard": "模型与信号诊断",
+        "task": "诊断记录", "history": "数据与历史", "settings": "设置与诊断",
+        "replay": "离线回放",
+    },
+}
+
+ADMIN_NAV_ICONS = {
+    "welcome": "◈", "baseline": "⌁", "dashboard": "◉",
+    "task": "▣", "history": "▤", "settings": "⚙", "replay": "▶",
 }
 
 
@@ -99,30 +122,38 @@ class MainWindow(QMainWindow):
         self,
         mode: Literal["mock", "live"] = "mock",
         package_dir: Optional[Path] = None,
-        user_id: str = "demo_user",
+        user_id: str = "admin_demo",
         user_name: str = "演示用户",
         role: str = ROLE_RESEARCH,
     ):
         super().__init__()
         ensure_chinese_font()
         self._mode = mode
-        self._user_id = user_id.strip() or "demo_user"
+        self._package_dir = package_dir
+        self._user_id = user_id.strip() or "admin_demo"
         self._user_name = user_name.strip() or "演示用户"
-        self._role = role if role in VALID_ROLES else ROLE_RESEARCH
+        fixed_role = role_for_user_id(self._user_id)
+        if role != fixed_role:
+            raise ValueError("账号角色由 ID 前缀固定，不能切换使用端。")
+        self._role = fixed_role
         self.setWindowTitle("智学脑机助手 - 单通道脑机接口学习状态辅助系统")
         self.resize(1920, 1080)
         self.setMinimumSize(1280, 700)
 
         # ── 核心状态与服务 ──
         self.state = DashboardState()
+        self.runtime_registry = StudentRuntimeRegistry.shared()
         self._inject_identity_into_state()
 
-        if mode == "live":
+        if self._role == ROLE_TEACHER:
+            self.service = TeacherObserverService()
+        elif mode == "live":
             # Live 模式：接入真实 ThinkGear + Production Baseline v1
             self._init_live_service(package_dir)
         else:
             # Mock 模式：默认，无需设备
             self.service = MockDataService(self.state)
+            self._mock_service = self.service
             self.service.start_streaming()
 
         # ── UI 构建 ──
@@ -183,13 +214,16 @@ class MainWindow(QMainWindow):
             self._mode = "mock"
             self.state.mode = "mock"  # 立即同步状态，避免短暂的错误状态
             self.state._live_fallback_reason = str(package_dir)
+            self.state.model_status = "FAILED"
+            self.state.model_error_user = "智能分析暂不可用，请联系管理员检查系统配置。"
+            self.state.model_error_detail = f"Production package not found: {package_dir}"
             self.state.quality_level = "rejected"
             self.state.quality_reasons = [
-                f"Live 启动失败：Production Baseline v1 包未找到 ({package_dir})，"
-                f"当前运行在 Mock 模式。"
+                "实时分析运行资产不完整，已进入教学演示模式。"
             ]
             self.state.emit_update()
             self.service = MockDataService(self.state)
+            self._mock_service = self.service
             self.service.start_streaming()
             return
 
@@ -197,6 +231,7 @@ class MainWindow(QMainWindow):
         from smart_learning_app.live_service import LiveDataService
 
         self.service = LiveDataService(self.state, package_dir)
+        self._live_service = self.service
         self.state._production_package_dir = str(package_dir)
         self.service.start_streaming()
 
@@ -217,6 +252,15 @@ class MainWindow(QMainWindow):
         subtitle.setObjectName("AppSubtitle")
         layout.addWidget(subtitle)
 
+        self._admin_console_title = QLabel("管理员控制台")
+        self._admin_console_title.setStyleSheet(
+            "color: #8EC5FF; font-size: 12px; font-weight: 700; "
+            "padding: 7px 9px; margin-top: 6px; background: #152338; "
+            "border: 1px solid #294263; border-radius: 6px;"
+        )
+        self._admin_console_title.setVisible(self._role == ROLE_RESEARCH)
+        layout.addWidget(self._admin_console_title)
+
         layout.addSpacing(12)
 
         self._identity_label = QLabel()
@@ -229,6 +273,28 @@ class MainWindow(QMainWindow):
         self._role_label = QLabel()
         self._role_label.setObjectName("AppSubtitle")
         layout.addWidget(self._role_label)
+        self._demo_badge = QLabel("教学演示 · 演示数据")
+        self._demo_badge.setStyleSheet(
+            "color: #FBBF24; background: rgba(251,191,36,0.10); "
+            "padding: 5px 8px; border-radius: 4px; font-size: 12px;"
+        )
+        self._demo_badge.setVisible(self._mode == "mock")
+        layout.addWidget(self._demo_badge)
+
+        mode_row = QHBoxLayout()
+        self._mode_caption = QLabel("数据模式：")
+        mode_row.addWidget(self._mode_caption)
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("实时采集", "live")
+        self._mode_combo.addItem("教学演示", "mock")
+        self._mode_combo.setCurrentIndex(1 if self._mode == "mock" else 0)
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_selected)
+        mode_row.addWidget(self._mode_combo, 1)
+        self._teacher_mode_source = QLabel("数据来源：跟随当前学生")
+        self._teacher_mode_source.setWordWrap(True)
+        self._teacher_mode_source.setVisible(False)
+        mode_row.addWidget(self._teacher_mode_source, 1)
+        layout.addLayout(mode_row)
         self._refresh_identity_labels()
 
         layout.addSpacing(10)
@@ -250,20 +316,20 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        switch_identity = QPushButton("切换身份 / 使用端")
+        switch_identity = QPushButton("切换账号")
         switch_identity.setMinimumHeight(36)
         switch_identity.clicked.connect(self._request_identity_switch)
         layout.addWidget(switch_identity)
 
         # 底部版本信息（标注当前模式）
         if self._mode == "live":
-            mode_label = "v1.0.0  |  Live模式 - 真实设备"
+            mode_label = "v1.0.0  |  实时采集"
         else:
-            mode_label = "v1.0.0  |  Mock模式 - 演示数据"
-        version = QLabel(mode_label)
-        version.setObjectName("AppSubtitle")
-        version.setAlignment(Qt.AlignCenter)
-        layout.addWidget(version)
+            mode_label = "v1.0.0  |  教学演示"
+        self._version_label = QLabel(mode_label)
+        self._version_label.setObjectName("AppSubtitle")
+        self._version_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._version_label)
 
         return sidebar
 
@@ -285,11 +351,14 @@ class MainWindow(QMainWindow):
     def _connect_page_flows(self):
         """Connect the two visible primary step buttons to page navigation."""
         self._pages["welcome"]._btn_start.clicked.connect(
-            lambda: self._navigate_to("baseline")
+            self._navigate_from_welcome
         )
         self._pages["baseline"]._btn_next.clicked.connect(
             lambda: self._navigate_to("dashboard")
         )
+
+    def _navigate_from_welcome(self):
+        self._navigate_to("dashboard" if self._role == ROLE_TEACHER else "baseline")
 
     def _build_status_bar(self) -> QWidget:
         bar = QFrame()
@@ -299,15 +368,15 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 0, 20, 0)
         layout.setSpacing(24)
 
-        self._sb_connector = QLabel("ThinkGear Connector: --")
+        self._sb_connector = QLabel("数据连接：--")
         self._sb_connector.setStyleSheet("color: #6B7689; font-size: 12px;")
         layout.addWidget(self._sb_connector)
 
-        self._sb_device = QLabel("MindWave: --")
+        self._sb_device = QLabel("EEG 设备：--")
         self._sb_device.setStyleSheet("color: #6B7689; font-size: 12px;")
         layout.addWidget(self._sb_device)
 
-        self._sb_signal = QLabel("Poor Signal: --")
+        self._sb_signal = QLabel("接触质量：--")
         self._sb_signal.setStyleSheet("color: #6B7689; font-size: 12px;")
         layout.addWidget(self._sb_signal)
 
@@ -344,52 +413,57 @@ class MainWindow(QMainWindow):
     def _on_state_updated(self, state):
         """根据 DashboardState 正式字段刷新状态栏。"""
         s = state
+        if self._role == ROLE_STUDENT:
+            self.runtime_registry.publish(s)
 
         # ── Connector 状态：offline | connecting | online ──
         cs = s.connector_status
-        if cs == "online":
-            self._sb_connector.setText("ThinkGear Connector: 已连接")
+        if s.mode == "mock":
+            self._sb_connector.setText("演示数据：已就绪")
+            self._sb_connector.setStyleSheet("color: #FBBF24; font-size: 12px;")
+        elif cs == "online":
+            self._sb_connector.setText("数据连接：已连接")
             self._sb_connector.setStyleSheet("color: #4ADE80; font-size: 12px;")
         elif cs == "connecting":
-            self._sb_connector.setText("ThinkGear Connector: 连接中")
+            self._sb_connector.setText("数据连接：连接中")
             self._sb_connector.setStyleSheet("color: #FBBF24; font-size: 12px;")
         else:  # offline（Mock 模式即在此分支）
-            self._sb_connector.setText("ThinkGear Connector: 未连接")
+            self._sb_connector.setText("数据连接：未连接")
             self._sb_connector.setStyleSheet("color: #F87171; font-size: 12px;")
 
         # ── Device 状态：offline | waiting_raw | online ──
         ds = s.device_status
         if ds == "online":
-            self._sb_device.setText("MindWave: 在线")
+            self._sb_device.setText("EEG 设备：在线" if s.mode != "mock" else "数据来源：教学演示")
             self._sb_device.setStyleSheet("color: #4ADE80; font-size: 12px;")
         elif ds == "waiting_raw":
-            self._sb_device.setText("MindWave: 等待信号")
+            self._sb_device.setText("EEG 设备：等待信号")
             self._sb_device.setStyleSheet("color: #FBBF24; font-size: 12px;")
         else:  # offline（Mock 模式即在此分支）
-            self._sb_device.setText("MindWave: 离线")
+            self._sb_device.setText("EEG 设备：离线")
             self._sb_device.setStyleSheet("color: #F87171; font-size: 12px;")
 
         # ── 信号质量：poor_signal (int | None) + quality_level ──
         poor = s.poor_signal
         ql = s.quality_level
         if poor is None:
-            self._sb_signal.setText("Poor Signal: --")
+            self._sb_signal.setText("接触质量：--")
             self._sb_signal.setStyleSheet("color: #6B7689; font-size: 12px;")
         else:
             if ql == "trusted":
                 sig_color = "#4ADE80"
-                sig_text = f"Poor Signal: {poor} (良好)"
+                sig_text = "接触质量：良好"
             elif ql == "warning":
                 sig_color = "#FBBF24"
-                sig_text = f"Poor Signal: {poor} (警告)"
+                sig_text = "接触质量：建议调整"
             else:  # rejected
                 sig_color = "#F87171"
-                sig_text = f"Poor Signal: {poor} (不合格)"
+                sig_text = "接触质量：暂不可用"
             self._sb_signal.setText(sig_text)
             self._sb_signal.setStyleSheet(f"color: {sig_color}; font-size: 12px;")
 
         # ── 会话时间：session_seconds + _session_active ──
-        if s._session_active:
+        if getattr(s, "session_active", s._session_active):
             secs_total = int(s.session_seconds)
             mins = secs_total // 60
             secs = secs_total % 60
@@ -400,13 +474,13 @@ class MainWindow(QMainWindow):
         # ── 模式：live | replay | mock ──
         mode = s.mode
         if mode == "live":
-            self._sb_mode.setText("模式: Live · 真实EEG")
+            self._sb_mode.setText("数据模式：实时采集")
             self._sb_mode.setStyleSheet("color: #4ADE80; font-size: 12px;")
         elif mode == "replay":
             self._sb_mode.setText("模式: 回放")
             self._sb_mode.setStyleSheet("color: #60A5FA; font-size: 12px;")
         elif mode == "mock":
-            self._sb_mode.setText(f"模式: Mock · 演示数据 {MOCK_UI_REFRESH_HZ}Hz")
+            self._sb_mode.setText("数据模式：教学演示")
             self._sb_mode.setStyleSheet("color: #FBBF24; font-size: 12px;")
         else:
             self._sb_mode.setText(f"模式: {mode}")
@@ -425,6 +499,7 @@ class MainWindow(QMainWindow):
         self.state._user_id = self._user_id
         self.state._user_name = self._user_name
         self.state._user_role = self._role
+        self.state.current_role = self._role
 
     def _refresh_identity_labels(self) -> None:
         if hasattr(self, "_identity_label"):
@@ -433,11 +508,44 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "_role_label"):
             self._role_label.setText(ROLE_LABELS[self._role])
+        if hasattr(self, "_admin_console_title"):
+            admin = self._role == ROLE_RESEARCH
+            self._admin_console_title.setVisible(admin)
+            self._identity_label.setStyleSheet(
+                ("color: #F3F7FC; font-size: 13px; font-weight: 700; "
+                 "padding: 9px 10px 4px 10px; background: #151F2E; "
+                 "border-left: 2px solid #4A8DFF;")
+                if admin else
+                "color: #D8DFE9; font-size: 13px; font-weight: 600; padding-top: 4px;"
+            )
+        if hasattr(self, "_mode_combo"):
+            teacher = self._role == ROLE_TEACHER
+            self._mode_combo.setVisible(not teacher)
+            self._mode_caption.setVisible(not teacher)
+            self._teacher_mode_source.setVisible(teacher)
+            self._demo_badge.setVisible(not teacher and self._mode == "mock")
+            self._mode_combo.setToolTip(
+                "教师端跟随当前学生的数据来源" if self._role == ROLE_TEACHER
+                else "仅可在没有进行中的学习任务时切换"
+            )
 
     def _apply_role_navigation(self) -> None:
         allowed = set(ROLE_PAGE_KEYS[self._role])
         for key, button in self._nav_buttons.items():
             button.setVisible(key in allowed)
+            label = ROLE_NAV_LABELS[self._role].get(key, button.text())
+            if self._role == ROLE_RESEARCH:
+                button.setText(f"  {ADMIN_NAV_ICONS.get(key, '•')}   {label}")
+                button.setStyleSheet(
+                    "QPushButton { text-align: left; padding-left: 14px; "
+                    "border-radius: 7px; color: #AEBBD0; }"
+                    "QPushButton:hover { background: #192A42; color: #EAF2FF; }"
+                    "QPushButton:checked { background: #203653; color: #70B7FF; "
+                    "font-weight: 700; border-left: 3px solid #4A8DFF; }"
+                )
+            else:
+                button.setText(label)
+                button.setStyleSheet("")
 
         if hasattr(self, "stack"):
             current = self.stack.currentWidget()
@@ -456,27 +564,57 @@ class MainWindow(QMainWindow):
             raise ValueError("用户 ID 和姓名不能为空。")
         if role not in VALID_ROLES:
             raise ValueError("未知的系统角色。")
+        fixed_role = role_for_user_id(user_id)
+        if role != fixed_role:
+            raise ValueError("账号角色由 ID 前缀固定，不能切换使用端。")
 
+        previous_role = self._role
         self._user_id = user_id
         self._user_name = user_name
         self._role = role
         self._inject_identity_into_state()
+        if previous_role != role:
+            self._replace_service_for_role()
         self._refresh_identity_labels()
         self._apply_role_navigation()
+        for page in self._pages.values():
+            if hasattr(page, "set_role"):
+                page.set_role(self._role)
 
         # 基线页已有兼容字段；同步输入框，防止切换身份后又写回旧用户。
         baseline = self._pages.get("baseline")
         if baseline is not None:
-            if hasattr(baseline, "_input_uid"):
-                baseline._input_uid.setText(user_id)
-            if hasattr(baseline, "_input_name"):
-                baseline._input_name.setText(user_name)
+            if hasattr(baseline, "set_identity"):
+                baseline.set_identity(user_id, user_name)
+            else:
+                if hasattr(baseline, "_input_uid"):
+                    baseline._input_uid.setText(user_id)
+                if hasattr(baseline, "_input_name"):
+                    baseline._input_name.setText(user_name)
 
         self._navigate_to(ROLE_DEFAULT_PAGE[role])
         self.state.emit_update()
 
+    def _replace_service_for_role(self) -> None:
+        """Switch acquisition ownership when an account role changes."""
+        old_service = getattr(self, "service", None)
+        history_snapshot = list(getattr(self.state, "_history_sessions", []))
+        if old_service is not None:
+            old_service.stop_streaming()
+        if self._role == ROLE_TEACHER:
+            self.service = TeacherObserverService()
+        elif self._mode == "live":
+            self._init_live_service(self._package_dir)
+        else:
+            self.service = MockDataService(self.state)
+            self.service.start_streaming()
+        self.state._history_sessions = history_snapshot
+        for page in getattr(self, "_pages", {}).values():
+            if hasattr(page, "service"):
+                page.service = self.service
+
     def _request_identity_switch(self) -> None:
-        if self.state._session_active:
+        if getattr(self.state, "session_active", self.state._session_active):
             QMessageBox.information(
                 self,
                 "会话正在进行",
@@ -485,7 +623,76 @@ class MainWindow(QMainWindow):
             return
         self.identity_switch_requested.emit()
 
+    def _on_mode_selected(self, index: int) -> None:
+        requested = self._mode_combo.itemData(index)
+        if requested and requested != self._mode and not self.switch_data_mode(requested):
+            self._mode_combo.blockSignals(True)
+            self._mode_combo.setCurrentIndex(1 if self._mode == "mock" else 0)
+            self._mode_combo.blockSignals(False)
+
+    def switch_data_mode(self, mode: str) -> bool:
+        """Switch acquisition source only while no Session/Task is active."""
+        if mode not in {"live", "mock"} or mode == self._mode:
+            return mode == self._mode
+        if bool(getattr(self.state, "task_running", False)) or bool(
+            getattr(self.state, "session_active", self.state._session_active)
+        ):
+            QMessageBox.information(
+                self, "暂不能切换数据模式",
+                "当前学习任务正在进行，请先结束任务后再切换数据模式。",
+            )
+            return False
+        old_service = self.service
+        if self._mode == "live" and hasattr(old_service, "suspend_streaming"):
+            old_service.suspend_streaming()
+            self._live_service = old_service
+        else:
+            old_service.stop_streaming()
+            if self._mode == "mock":
+                self._mock_service = old_service
+        self._mode = mode
+        self.state._eeg_raw_buffer.clear()
+        self.state._attention_history.clear()
+        self.state._meditation_history.clear()
+        self.state.clear_interpretation()
+        self.state.attention = None
+        self.state.meditation = None
+        self.state.poor_signal = None
+        self.state.warmup_progress = 0.0
+        if self._role != ROLE_TEACHER and mode == "mock":
+            self.service = getattr(self, "_mock_service", None) or MockDataService(self.state)
+            self._mock_service = self.service
+            self.service.start_streaming()
+        elif self._role != ROLE_TEACHER:
+            cached_live = getattr(self, "_live_service", None)
+            if cached_live is not None:
+                self.service = cached_live
+                self.service.resume_streaming()
+            else:
+                self._init_live_service(self._package_dir)
+        for page in self._pages.values():
+            if hasattr(page, "service"):
+                page.service = self.service
+        self._demo_badge.setVisible(self._mode == "mock")
+        self._version_label.setText(
+            "v1.0.0  |  教学演示" if self._mode == "mock" else "v1.0.0  |  实时采集"
+        )
+        self._mode_combo.blockSignals(True)
+        self._mode_combo.setCurrentIndex(1 if self._mode == "mock" else 0)
+        self._mode_combo.blockSignals(False)
+        # Round 4A-2：历史页可见时，模式切换后立即同步筛选/列表/说明文字。
+        history_page = self._pages.get("history")
+        if history_page is not None and hasattr(history_page, "on_data_mode_changed"):
+            history_page.on_data_mode_changed(mode)
+        self.state.emit_update()
+        return True
+
     def closeEvent(self, event):
         """关闭窗口时停止后台线程，确保采集/推理线程干净退出。"""
+        if self._role == ROLE_STUDENT:
+            self.runtime_registry.mark_offline(self._user_id)
         self.service.stop_streaming()
+        cached_live = getattr(self, "_live_service", None)
+        if cached_live is not None and cached_live is not self.service:
+            cached_live.stop_streaming()
         super().closeEvent(event)

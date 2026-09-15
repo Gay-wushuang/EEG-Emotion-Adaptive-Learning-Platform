@@ -42,6 +42,14 @@ _verify_shots/
 _verify_ui.py
 .ui_review/
 .dependency_quarantine/
+.bridge/
+
+# ================================
+# Screenshots / visual verification artifacts
+# ================================
+**/screenshots/
+*.png
+*.jpg
 
 # ================================
 # Third-party bundled software (do not commit binaries)
@@ -110,6 +118,10 @@ temp/
 tmp/
 *.tmp
 *.temp
+*.cache
+
+# Runtime-generated session reports
+session_report.txt
 
 # Temporary docs
 8~9.md

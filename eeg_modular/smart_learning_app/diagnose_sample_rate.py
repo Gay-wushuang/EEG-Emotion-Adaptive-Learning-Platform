@@ -22,9 +22,9 @@
 不触发任何代码修改。
 
 使用方法：
-    E:\\anaconda3\\envs\\eegcnn\\python.exe smart_learning_app/diagnose_sample_rate.py
-    E:\\anaconda3\\envs\\eegcnn\\python.exe smart_learning_app/diagnose_sample_rate.py --duration 30
-    E:\\anaconda3\\envs\\eegcnn\\python.exe smart_learning_app/diagnose_sample_rate.py --host 127.0.0.1 --port 13854
+    .venv\\Scripts\\python.exe smart_learning_app/diagnose_sample_rate.py
+    .venv\\Scripts\\python.exe smart_learning_app/diagnose_sample_rate.py --duration 30
+    .venv\\Scripts\\python.exe smart_learning_app/diagnose_sample_rate.py --host 127.0.0.1 --port 13854
 """
 
 from __future__ import annotations

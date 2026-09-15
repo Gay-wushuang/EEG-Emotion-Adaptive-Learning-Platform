@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import random
 from typing import Optional
 
 import numpy as np
@@ -61,7 +60,15 @@ class InferenceWorker(QThread):
         else:               # negative
             base = np.array([0.15, 0.28, 0.57])
 
-        noisy = base + np.random.randn(3) * 0.06
+        # Deterministic, gently varying demo probabilities.
+        phase = getattr(self, "_step_index", 0)
+        self._step_index = phase + 1
+        offset = np.array([
+            0.015 * np.sin(phase / 3.0),
+            0.012 * np.sin(phase / 4.0 + 1.0),
+            0.010 * np.sin(phase / 5.0 + 2.0),
+        ])
+        noisy = base + offset
         noisy = np.clip(noisy, 0.02, 0.98)
         probs = noisy / noisy.sum()
 

@@ -81,6 +81,11 @@ class LiveServiceTest(unittest.TestCase):
 
     def test_dominant_state_is_mode_of_accepted_predictions(self):
         state = DashboardState()
+        state.connector_status = "online"
+        state.device_status = "online"
+        state.poor_signal = 0
+        state.warmup_progress = 1.0
+        state.quality_level = "trusted"
         service = LiveDataService(state, ROOT / "production_baseline_v1")
         def result(label, accepted=True):
             probs = {

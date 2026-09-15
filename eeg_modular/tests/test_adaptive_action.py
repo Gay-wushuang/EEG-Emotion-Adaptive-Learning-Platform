@@ -10,7 +10,7 @@
   7. TaskPage 能正确响应 DashboardState 的难度变化
 
 运行方式（在 eeg_modular 目录下）：
-    E:\\anaconda3\\envs\\eegcnn\\python.exe -m unittest tests.test_adaptive_action -v
+    .venv\\Scripts\\python.exe -m unittest tests.test_adaptive_action -v
 """
 
 import os
@@ -79,7 +79,7 @@ class AdaptiveActionTest(unittest.TestCase):
 
     # ── 测试 1: hard -> medium ──
     def test_01_hard_to_medium(self):
-        """hard 难度触发后应降为 medium，action=reduce_difficulty。"""
+        """hard 难度触发后只建议降低负荷，不修改正式难度。"""
         from services.dashboard_state import (
             DIFFICULTY_MEDIUM, AdaptiveAction,
         )
@@ -87,16 +87,16 @@ class AdaptiveActionTest(unittest.TestCase):
         svc = self._make_service(state)
         svc._apply_adaptive_action()
 
-        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM)
+        self.assertEqual(state.task_difficulty, "hard")
         self.assertEqual(state.adaptive_action, AdaptiveAction.REDUCE_DIFFICULTY)
         self.assertTrue(state.adaptive_action_reason)
         self.assertIsNotNone(state.adaptive_action_time)
-        self.assertIn("困难", state.adaptive_feedback_text)
-        self.assertIn("中等", state.adaptive_feedback_text)
+        self.assertIn("建议", state.adaptive_feedback_text)
+        self.assertIn("保持不变", state.adaptive_feedback_text)
 
     # ── 测试 2: medium -> easy ──
     def test_02_medium_to_easy(self):
-        """medium 难度触发后应降为 easy。"""
+        """medium 难度触发后只建议降低负荷，不修改正式难度。"""
         from services.dashboard_state import (
             DIFFICULTY_EASY, AdaptiveAction,
         )
@@ -104,10 +104,10 @@ class AdaptiveActionTest(unittest.TestCase):
         svc = self._make_service(state)
         svc._apply_adaptive_action()
 
-        self.assertEqual(state.task_difficulty, DIFFICULTY_EASY)
+        self.assertEqual(state.task_difficulty, "medium")
         self.assertEqual(state.adaptive_action, AdaptiveAction.REDUCE_DIFFICULTY)
-        self.assertIn("中等", state.adaptive_feedback_text)
-        self.assertIn("简单", state.adaptive_feedback_text)
+        self.assertIn("建议", state.adaptive_feedback_text)
+        self.assertNotIn("已从", state.adaptive_feedback_text)
 
     # ── 测试 3: easy -> suggest_break ──
     def test_03_easy_to_suggest_break(self):
@@ -174,7 +174,7 @@ class AdaptiveActionTest(unittest.TestCase):
         svc._apply_adaptive_action()
 
         # 触发后状态已变化
-        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM)
+        self.assertEqual(state.task_difficulty, "hard")
         self.assertNotEqual(state.adaptive_action, AdaptiveAction.NONE)
 
         # reset_session
@@ -188,7 +188,7 @@ class AdaptiveActionTest(unittest.TestCase):
         # task_running 也复位
         self.assertFalse(state.task_running)
         # task_difficulty 保留用户选择（不应被 reset 清空）
-        self.assertEqual(state.task_difficulty, DIFFICULTY_MEDIUM)
+        self.assertEqual(state.task_difficulty, "hard")
 
     # ── 测试 7: TaskPage 能正确响应 DashboardState 的难度变化 ──
     def test_07_taskpage_resyncs_difficulty(self):
